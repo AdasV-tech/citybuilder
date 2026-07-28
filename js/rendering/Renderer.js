@@ -30,7 +30,7 @@ export class Renderer {
     }
 
     render(state) {
-        const { cityMap, roadNetwork, zoneManager, trafficManager, hoverTile, activeTool, dragPreviewTiles } = state;
+        const { cityMap, roadNetwork, zoneManager, trafficManager, infrastructure, hoverTile, activeTool, dragPreviewTiles } = state;
         const ctx = this.ctx;
         const cam = this.camera;
 
@@ -47,11 +47,62 @@ export class Renderer {
         drawMap(ctx, cityMap, bounds);
         drawZones(ctx, cityMap, bounds);
         drawRoads(ctx, cityMap, bounds);
+        this._drawInfrastructure(ctx, cityMap, infrastructure, bounds);
         drawBuildings(ctx, cityMap, bounds);
         drawCars(ctx, trafficManager);
 
         this._drawHoverAndPreview(ctx, hoverTile, activeTool, dragPreviewTiles, cityMap);
 
+        ctx.restore();
+    }
+
+    _drawInfrastructure(ctx, cityMap, infrastructure, bounds) {
+        if (!infrastructure) return;
+        for (let y = bounds.minY; y <= bounds.maxY; y++) {
+            for (let x = bounds.minX; x <= bounds.maxX; x++) {
+                const tile = cityMap.getTile(x, y);
+                if (!tile || !tile.road) continue;
+                if (tile.road.serviceMask & 1) {
+                    ctx.strokeStyle = 'rgba(93, 216, 255, 0.95)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
+                    ctx.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
+                    ctx.stroke();
+                }
+                if (tile.road.serviceMask & 2) {
+                    ctx.strokeStyle = 'rgba(255, 220, 90, 0.95)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
+                    ctx.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        const nodes = infrastructure.getServiceNodes();
+        for (const pump of nodes.waterPumps) {
+            this._drawInfrastructureMarker(ctx, pump.x, pump.y, '#5dd8ff', 'W');
+        }
+        for (const outlet of nodes.wasteWaterOutlets) {
+            this._drawInfrastructureMarker(ctx, outlet.x, outlet.y, '#5b8e8b', 'S');
+        }
+        for (const plant of nodes.powerPlants) {
+            this._drawInfrastructureMarker(ctx, plant.x, plant.y, '#ffd166', 'E');
+        }
+    }
+
+    _drawInfrastructureMarker(ctx, x, y, color, label) {
+        const px = x * TILE_SIZE + TILE_SIZE * 0.25;
+        const py = y * TILE_SIZE + TILE_SIZE * 0.25;
+        const size = TILE_SIZE * 0.5;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.fillRect(px, py, size, size);
+        ctx.fillStyle = '#102234';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText(label, px + 4, py + 14);
         ctx.restore();
     }
 

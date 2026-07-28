@@ -62,6 +62,31 @@ export class TrafficManager {
         this.cars.push(new Car(path, Math.random()));
     }
 
+    _evaluateServiceAlerts(stats = {}) {
+        const alerts = [];
+        const residentialPopulation = stats.residentialPopulation ?? this.zones.totalPopulation;
+        const jobs = stats.jobs ?? this.zones.totalJobs;
+        const jobCapacity = this.zones.buildings.reduce((sum, building) => {
+            if (building.isResidential) return sum;
+            return sum + Math.max(1, building.capacity || 0);
+        }, 0);
+        const shouldAlert = jobs > residentialPopulation || jobCapacity > residentialPopulation;
+        if (!shouldAlert) return alerts;
+
+        for (const building of this.zones.industrialBuildings) {
+            if (building.abandoned) continue;
+            const workerTarget = Math.max(1, Math.floor(building.capacity * 0.45));
+            if (building.workers < workerTarget) {
+                alerts.push({
+                    type: 'workers-needed',
+                    building,
+                    message: 'Factories need more workers'
+                });
+            }
+        }
+        return alerts;
+    }
+
     _advanceCars(dtSeconds) {
         // Group cars by the tile they currently occupy so we can enforce following distance.
         const occupancy = new Map(); // tileKey -> [{car, fractionInTile}]

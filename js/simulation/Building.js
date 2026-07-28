@@ -3,7 +3,7 @@
 // brief asks for (population, workers, happiness, tax contribution) and can
 // upgrade once conditions are good, per the "first playable version" scope.
 
-import { BUILDING_CAPACITY, MAX_BUILDING_LEVEL, TAX_RATE_RESIDENTIAL, TAX_RATE_COMMERCIAL, TAX_RATE_INDUSTRIAL } from '../utils/Constants.js';
+import { BUILDING_CAPACITY, MAX_BUILDING_LEVEL, TAX_RATE_RESIDENTIAL, TAX_RATE_COMMERCIAL, TAX_RATE_INDUSTRIAL, ABANDONMENT_WINDOW_MS } from '../utils/Constants.js';
 
 let nextBuildingId = 1;
 
@@ -19,6 +19,10 @@ export class Building {
         this.workers = 0;    // employees (commercial/industrial only)
         this.jobCapacity = this._capacityForLevel();
         this.happiness = 0.6; // 0..1
+        this.abandonmentTimer = 0;
+        this.alertedForWorkers = false;
+        this.workerAlertShown = false;
+        this.abandoned = false;
 
         this.timeSinceUpgradeCheck = 0;
     }
@@ -73,7 +77,32 @@ export class Building {
         const occRatio = this.capacity > 0 ? this.occupancy / this.capacity : 0;
         let h = 0.5 + occRatio * 0.2 + (cityHappinessFactors.taxRateComfort ?? 0.1);
         h -= (cityHappinessFactors.congestionPenalty ?? 0);
+        h -= Math.max(0, 0.18 - (cityHappinessFactors.serviceCoverage ?? 1) * 0.18);
         this.happiness = Math.max(0, Math.min(1, h));
+    }
+
+    updateServiceState(dtMs, context = {}) {
+        if (this.abandoned) return false;
+        if (!this.isIndustrial) return false;
+
+        const workerTarget = Math.max(1, Math.floor(this.capacity * 0.45));
+        const shortage = (context.jobs ?? 0) > (context.residentialPopulation ?? 0);
+        const needsWorkers = shortage && this.workers < workerTarget;
+        if (needsWorkers) {
+            this.alertedForWorkers = true;
+            this.abandonmentTimer += dtMs;
+        } else {
+            this.alertedForWorkers = false;
+            this.abandonmentTimer = Math.max(0, this.abandonmentTimer - dtMs * 0.25);
+            this.workerAlertShown = false;
+        }
+
+        if (this.abandonmentTimer >= (context.abandonmentWindowMs ?? ABANDONMENT_WINDOW_MS)) {
+            this.abandoned = true;
+            this.workers = 0;
+            return true;
+        }
+        return false;
     }
 
     /** Attempts to upgrade if happiness is good and the building is near full. */
@@ -91,7 +120,9 @@ export class Building {
     toJSON() {
         return {
             id: this.id, x: this.x, y: this.y, zoneType: this.zoneType, level: this.level,
-            population: this.population, workers: this.workers, happiness: this.happiness
+            population: this.population, workers: this.workers, happiness: this.happiness,
+            abandonmentTimer: this.abandonmentTimer, alertedForWorkers: this.alertedForWorkers,
+            workerAlertShown: this.workerAlertShown, abandoned: this.abandoned
         };
     }
 
@@ -102,6 +133,10 @@ export class Building {
         b.population = data.population;
         b.workers = data.workers;
         b.happiness = data.happiness;
+        b.abandonmentTimer = data.abandonmentTimer ?? 0;
+        b.alertedForWorkers = data.alertedForWorkers ?? false;
+        b.workerAlertShown = data.workerAlertShown ?? false;
+        b.abandoned = data.abandoned ?? false;
         b.jobCapacity = b._capacityForLevel();
         if (data.id >= nextBuildingId) nextBuildingId = data.id + 1;
         return b;

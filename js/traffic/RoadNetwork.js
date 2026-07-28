@@ -34,7 +34,7 @@ export class RoadNetwork {
         if (tile.building || tile.zoneType) return false; // can't pave over zoned/built lots
 
         tile.clearNature();
-        tile.road = { connections: 0 };
+        tile.road = { connections: 0, serviceMask: 0 };
         this.roadTiles.add(this.key(x, y));
         this._updateConnections(x, y);
         return true;

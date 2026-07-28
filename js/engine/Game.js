@@ -18,6 +18,7 @@ import { GameLoop } from './GameLoop.js';
 import { Renderer } from '../rendering/Renderer.js';
 import { UIManager } from '../ui/UIManager.js';
 import { SaveManager } from '../save/SaveManager.js';
+import { InfrastructureManager } from '../simulation/InfrastructureManager.js';
 import { eventBus } from '../utils/EventBus.js';
 
 export class Game {
@@ -30,6 +31,7 @@ export class Game {
         this.roadNetwork = new RoadNetwork(this.cityMap);
         this.pathfinder = new Pathfinder(this.roadNetwork);
         this.zoneManager = new ZoneManager(this.cityMap, this.roadNetwork);
+        this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
         this.time = new TimeManager('normal');
         this.economy = new EconomyManager();
         this.trafficManager = new TrafficManager(this.roadNetwork, this.pathfinder, this.zoneManager, this.time);
@@ -53,6 +55,8 @@ export class Game {
         this._resizeCanvasToDisplaySize();
         window.addEventListener('resize', () => this._resizeCanvasToDisplaySize());
 
+        this._createMainHighway();
+        this.infrastructure.rebuildNetworks();
         this._tryLoadAutosaveOnBoot();
     }
 
@@ -70,6 +74,17 @@ export class Game {
 
     // --- tool actions (called by ToolController) -----------------------------
 
+    _createMainHighway() {
+        const centerX = Math.floor(this.cityMap.width / 2);
+        const centerY = Math.floor(this.cityMap.height / 2);
+        for (let y = 8; y < this.cityMap.height - 8; y++) {
+            this.roadNetwork.placeRoad(centerX, y);
+        }
+        for (let x = 8; x < this.cityMap.width - 8; x++) {
+            this.roadNetwork.placeRoad(x, centerY);
+        }
+    }
+
     placeRoads(tiles) {
         let placedCount = 0;
         const placeable = tiles.filter(t => {
@@ -85,7 +100,10 @@ export class Game {
         for (const t of placeable) {
             if (this.roadNetwork.placeRoad(t.x, t.y)) placedCount++;
         }
-        if (placedCount > 0) this.economy.spend(this.economy.roadCost(placedCount));
+        if (placedCount > 0) {
+            this.economy.spend(this.economy.roadCost(placedCount));
+            this.infrastructure.rebuildNetworks();
+        }
     }
 
     placeZones(tiles, zoneType) {
@@ -114,6 +132,7 @@ export class Game {
             if (tile.zoneType || tile.building) this.zoneManager.unzoneTile(t.x, t.y);
             tile.clearNature();
         }
+        this.infrastructure.rebuildNetworks();
     }
 
     // --- save / load -----------------------------------------------------------
@@ -131,6 +150,7 @@ export class Game {
         }
         this._resetMutableState();
         this.saveManager.applyTo(this, data);
+        this.infrastructure.rebuildNetworks();
         eventBus.emit('ui:toast', 'City loaded');
     }
 
@@ -139,6 +159,7 @@ export class Game {
         const data = this.saveManager.loadRaw(false) || this.saveManager.loadRaw(true);
         if (data) {
             this.saveManager.applyTo(this, data);
+            this.infrastructure.rebuildNetworks();
         }
     }
 
@@ -153,6 +174,9 @@ export class Game {
         this.roadNetwork.roadTiles.clear();
         this.zoneManager.buildings = [];
         this.trafficManager.cars = [];
+        this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
+        this._createMainHighway();
+        this.infrastructure.rebuildNetworks();
     }
 
     // --- main loop --------------------------------------------------------------
@@ -197,10 +221,27 @@ export class Game {
         const shouldCheckUpgrade = this._upgradeTimer > 10000;
         if (shouldCheckUpgrade) this._upgradeTimer = 0;
 
-        for (const b of this.zoneManager.buildings) {
+        const alerts = this.trafficManager._evaluateServiceAlerts({ residentialPopulation: pop, jobs });
+        for (const alert of alerts) {
+            if (!alert.building.workerAlertShown) {
+                eventBus.emit('ui:toast', alert.message);
+                alert.building.workerAlertShown = true;
+            }
+        }
+
+        const buildingsSnapshot = [...this.zoneManager.buildings];
+        for (const b of buildingsSnapshot) {
+            const serviceFactor = this.infrastructure.getServiceAccessFactor(b.x, b.y);
             const demand = b.isResidential ? residentialDemand : jobDemand;
-            b.updateOccupancy(dtMs, demand);
-            b.updateHappiness({ taxRateComfort: 0.1, congestionPenalty });
+            b.updateOccupancy(dtMs, demand * serviceFactor);
+            const abandoned = b.updateServiceState(dtMs, { jobs, residentialPopulation: pop, abandonmentWindowMs: 20000 });
+            if (abandoned) {
+                const tile = this.cityMap.getTile(b.x, b.y);
+                if (tile) tile.building = null;
+                this.zoneManager.buildings = this.zoneManager.buildings.filter(existing => existing !== b);
+                continue;
+            }
+            b.updateHappiness({ taxRateComfort: 0.1, congestionPenalty, serviceCoverage: serviceFactor });
             if (shouldCheckUpgrade) b.tryUpgrade();
         }
     }
@@ -211,6 +252,7 @@ export class Game {
             roadNetwork: this.roadNetwork,
             zoneManager: this.zoneManager,
             trafficManager: this.trafficManager,
+            infrastructure: this.infrastructure,
             hoverTile: this.ui.toolController.hoverTile,
             activeTool: this.ui.toolController.activeTool,
             dragPreviewTiles: this.ui.toolController.previewTiles
