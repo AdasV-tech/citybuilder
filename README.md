@@ -6,9 +6,10 @@ vanilla HTML, CSS, and ES6 JavaScript. No backend, no build step, no
 frameworks. **For personal educational use.**
 
 This is the **first playable version**: a solid core engine (camera, map,
-roads, zoning, growth, traffic, economy, time, save/load) designed so future
-systems (water, electricity, police, garbage, hospitals, schools, …) can be
-added later without rewriting what's already here.
+roads, zoning, growth, traffic, economy, time, save/load) plus a first pass
+at city services (water/power coverage, industrial worker shortages and
+abandonment), designed so deeper systems (police, garbage, hospitals,
+schools, …) can be added later without rewriting what's already here.
 
 ![status](https://img.shields.io/badge/status-first%20playable%20version-e8c94a)
 
@@ -46,7 +47,10 @@ On touch devices, one-finger drag pans the map and a tap uses the active tool.
 
 ## How to play
 
-1. Pick the **Road** tool and drag out a road from your starting area.
+You start with a small cross-shaped highway already laid down the middle of
+the map so there's somewhere to build from immediately.
+
+1. Pick the **Road** tool and drag out roads connected to the starter highway.
 2. Pick **Residential**, **Commercial**, or **Industrial** and drag a
    rectangle of zoning next to a road.
 3. Wait — zoned lots next to a road slowly grow into buildings.
@@ -55,7 +59,23 @@ On touch devices, one-finger drag pans the map and a tap uses the active tool.
 5. Buildings pay daily taxes (settled once per in-game day) which fund your
    budget; roads cost a small daily upkeep.
 6. Buildings that stay busy and happy can upgrade once to a bigger version.
-7. Use **Bulldoze** to remove roads, zones, or buildings you don't want.
+7. Use **Bulldoze** to remove roads, zones, buildings, or trees you don't want.
+
+### Water & power
+
+A couple of water pumps and three power plants are placed automatically at
+map generation, with coverage radiating out along any road they touch (see
+the in-game legend, top-right, for the icons and line colors). Buildings
+outside water/power coverage grow more slowly and are less happy — look for
+the small red dot on a building's roof as the "needs service" indicator.
+
+### Worker shortages & abandonment
+
+If your industrial zones can't find enough workers (population isn't keeping
+up with jobs), you'll get a toast warning. A factory that stays understaffed
+for too long is abandoned — the lot clears and sits vacant for a while before
+it's eligible to regrow, so keep residential and industrial growth roughly
+balanced.
 
 There's no failure state in this first version — it's meant to be a calm
 sandbox foundation, not a challenge run.
@@ -65,9 +85,13 @@ sandbox foundation, not a challenge run.
 ```text
 CityBuilder/
 │
-├── index.html          Page shell: canvas, toolbar, info bar
+├── index.html          Page shell: canvas, toolbar, info bar, infra legend
 ├── README.md
 ├── LICENSE
+├── package.json         `npm test` runs the Node test suite
+│
+├── .devcontainer/
+│   └── devcontainer.json  Claude Code dev container config
 │
 ├── css/
 │   └── style.css        All UI chrome styling (canvas is drawn by JS)
@@ -84,7 +108,8 @@ CityBuilder/
 │   ├── simulation/         World state that isn't roads/zoning specifically
 │   │   ├── CityMap.js       Tile grid + terrain generation (grass/trees/water)
 │   │   ├── Tile.js          Single grid cell data model
-│   │   ├── Building.js      Population/workers/happiness/tax/upgrade logic
+│   │   ├── Building.js      Population/workers/happiness/tax/upgrade/abandonment
+│   │   ├── InfrastructureManager.js Water pump/power plant coverage over roads
 │   │   ├── TimeManager.js   Day counter, time-of-day fraction, speed control
 │   │   └── EconomyManager.js Money, placement costs, daily tax/upkeep
 │   │
@@ -95,13 +120,13 @@ CityBuilder/
 │   │   ├── RoadNetwork.js   Road placement + connection bitmasks + adjacency graph
 │   │   ├── Pathfinder.js    A* pathfinding across the road graph
 │   │   ├── Car.js            Single car agent following a path
-│   │   └── TrafficManager.js Commute spawning + following-distance movement
+│   │   └── TrafficManager.js Commute spawning, following-distance movement, service alerts
 │   │
 │   ├── rendering/          Canvas drawing, one concern per file
 │   │   ├── Renderer.js       Draw-order orchestration + tile highlight/preview
 │   │   ├── MapRenderer.js    Terrain (grass/water/trees)
 │   │   ├── RoadRenderer.js   Asphalt + connection-aware lane markings
-│   │   ├── BuildingRenderer.js Zone tint/growth bar + building shapes
+│   │   ├── BuildingRenderer.js Zone tint/growth bar + building shapes + service badge
 │   │   └── CarRenderer.js    Simple oriented car rectangles
 │   │
 │   ├── ui/                 DOM glue (no game logic)
@@ -118,30 +143,52 @@ CityBuilder/
 │       ├── EventBus.js       Tiny pub/sub used for cross-system notifications
 │       └── MathUtils.js      clamp/lerp/pathing helpers, seeded RNG
 │
+├── test/
+│   └── traffic-services.test.js  Node `--test` coverage for shortage alerts
+│
 ├── assets/                 Reserved for future sprites/audio (currently empty)
 └── saves/                  Reserved for future exportable save files
 ```
 
 ## Design notes for extending this later
 
-The brief this was built from calls out service systems (water, electricity,
-police, garbage, hospitals, schools) as deliberately **out of scope** for
-this first version. The architecture leaves room for them:
+Water and power coverage, and industrial worker-shortage/abandonment, are now
+in. Police, garbage, hospitals, schools, and any richer land-value/happiness
+model are still deliberately **out of scope** for this version. The
+architecture leaves room for them:
 
-- **New simulation systems** (e.g. `PowerManager`, `WaterManager`) can follow
-  the exact shape of `EconomyManager`/`ZoneManager`: own their state, expose
-  an `update(dtMs)` method, and get wired into `Game._update()`.
-- **New tools** (e.g. a power-line tool) plug into `ToolController` the same
-  way `road`/`zone-*`/`bulldoze` do — add a case in `_isTileValidForTool` and
-  `_commit`, and a toolbar button with a matching `data-tool`.
+- **New simulation systems** (e.g. `PoliceManager`, `GarbageManager`) can
+  follow the exact shape of `InfrastructureManager`/`ZoneManager`: own their
+  state, expose an `update(dtMs)` or `rebuildNetworks()`-style method, and get
+  wired into `Game._update()` / `Game.placeRoads()` the way infrastructure is.
+- **New tools** (e.g. a dedicated power-line tool, if freeform placement is
+  wanted instead of automatic road-following coverage) plug into
+  `ToolController` the same way `road`/`zone-*`/`bulldoze` do — add a case in
+  `_isTileValidForTool` and `_commit`, and a toolbar button with a matching
+  `data-tool`.
 - **New renderers** are just another `draw*()` function called from
-  `Renderer.render()` in the right draw-order slot.
-- **Building requirements** (e.g. "needs power to grow") are a small addition
-  to `ZoneManager.update()`'s growth condition and `Building.updateHappiness()`.
+  `Renderer.render()` in the right draw-order slot, the way
+  `Renderer._drawInfrastructure()` was added alongside the existing ones.
+- **More building requirements** (e.g. "needs garbage collection to stay
+  happy") are a small addition to `Building.updateHappiness()` /
+  `updateServiceState()`, following the pattern `serviceCoverage` already uses.
 - **Save format** is versioned (`version: 1` in `SaveManager`) so future
   systems can add fields without breaking old saves — just default missing
   fields when restoring, the way `economy.restore()` and `time.restore()`
-  already do.
+  already do. Infrastructure itself doesn't need saving: pump/plant positions
+  are deterministic from the map seed, and coverage is recomputed with
+  `infrastructure.rebuildNetworks()` after any load.
+
+## Testing
+
+A small Node test suite covers the service-alert logic:
+
+```bash
+npm test
+```
+
+It uses Node's built-in test runner (`node --test`), so no extra dependencies
+are required.
 
 ## Performance
 

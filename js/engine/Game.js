@@ -55,7 +55,13 @@ export class Game {
         this._resizeCanvasToDisplaySize();
         window.addEventListener('resize', () => this._resizeCanvasToDisplaySize());
 
-        this._createMainHighway();
+        // The starter highway is only for a fresh city. If a save already
+        // exists we skip it entirely, otherwise it would silently reappear
+        // every reload even after the player bulldozed it and saved.
+        const hasExistingSave = this.saveManager.hasSave() || this.saveManager.hasAutosave();
+        if (!hasExistingSave) {
+            this._createMainHighway();
+        }
         this.infrastructure.rebuildNetworks();
         this._tryLoadAutosaveOnBoot();
     }
@@ -175,8 +181,10 @@ export class Game {
         this.zoneManager.buildings = [];
         this.trafficManager.cars = [];
         this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
-        this._createMainHighway();
-        this.infrastructure.rebuildNetworks();
+        // Deliberately does NOT recreate the starter highway: loadGame() is
+        // about to apply saved data, which is the source of truth for what
+        // roads should exist (including if the player bulldozed the highway
+        // before saving).
     }
 
     // --- main loop --------------------------------------------------------------
@@ -237,7 +245,10 @@ export class Game {
             const abandoned = b.updateServiceState(dtMs, { jobs, residentialPopulation: pop, abandonmentWindowMs: 20000 });
             if (abandoned) {
                 const tile = this.cityMap.getTile(b.x, b.y);
-                if (tile) tile.building = null;
+                if (tile) {
+                    tile.building = null;
+                    tile.growthTimer = 0; // lot sits vacant for a full growth cycle before it can regrow
+                }
                 this.zoneManager.buildings = this.zoneManager.buildings.filter(existing => existing !== b);
                 continue;
             }

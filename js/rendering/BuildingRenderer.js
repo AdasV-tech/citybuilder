@@ -35,17 +35,17 @@ export function drawZones(ctx, cityMap, bounds) {
     }
 }
 
-export function drawBuildings(ctx, cityMap, bounds) {
+export function drawBuildings(ctx, cityMap, bounds, infrastructure) {
     for (let y = bounds.minY; y <= bounds.maxY; y++) {
         for (let x = bounds.minX; x <= bounds.maxX; x++) {
             const tile = cityMap.getTile(x, y);
             if (!tile || !tile.building) continue;
-            drawBuilding(ctx, x * TILE_SIZE, y * TILE_SIZE, tile.building);
+            drawBuilding(ctx, x * TILE_SIZE, y * TILE_SIZE, tile.building, infrastructure);
         }
     }
 }
 
-function drawBuilding(ctx, px, py, building) {
+function drawBuilding(ctx, px, py, building, infrastructure) {
     const pad = 3;
     const size = TILE_SIZE - pad * 2;
     const heightBoost = (building.level - 1) * 3; // taller with each level, purely visual
@@ -71,6 +71,14 @@ function drawBuilding(ctx, px, py, building) {
     for (let i = 0; i < dots; i++) {
         const wx = px + pad + 4 + i * ((size - 8) / Math.max(1, dots - 1 || 1));
         ctx.fillRect(wx, py + pad - heightBoost + size * 0.4, 2, 2);
+    }
+
+    // small warning badge when the lot lacks full water/power coverage
+    if (infrastructure && infrastructure.getServiceAccessFactor(building.x, building.y) < 1) {
+        ctx.fillStyle = 'rgba(224, 87, 77, 0.9)';
+        ctx.beginPath();
+        ctx.arc(px + pad + size - 2, py + pad - heightBoost + 2, 3, 0, Math.PI * 2);
+        ctx.fill();
     }
     ctx.restore();
 }

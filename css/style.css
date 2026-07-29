@@ -217,5 +217,68 @@ html, body {
     .toolbar-title { display: none; }
     .tool-btn .label, .save-btn .label { display: none; }
     #help-hint { display: none; }
+    #infra-legend { display: none; }
     #info-bar { gap: 12px; }
+}
+
+/* ---------- Infrastructure legend ---------- */
+
+#infra-legend {
+    position: absolute;
+    top: 70px;
+    right: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: rgba(20, 26, 34, 0.72);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    z-index: 9;
+    max-width: 190px;
+    pointer-events: none;
+}
+
+.legend-title {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-main);
+    font-weight: 700;
+    margin-bottom: 2px;
+}
+
+.legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend-swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #102234;
+    flex-shrink: 0;
+}
+
+.legend-line {
+    display: inline-block;
+    width: 16px;
+    height: 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.legend-note {
+    margin-top: 2px;
+    font-style: italic;
+    line-height: 1.3;
 }

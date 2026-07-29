@@ -42,7 +42,9 @@ export const ZONE_TYPES = Object.freeze({
 
 export const GROWTH_TIME_MS = 6000;        // base time (at normal speed) for a zoned lot to build
 export const UPGRADE_CHECK_INTERVAL_MS = 10000; // how often buildings re-evaluate upgrading
-export const MAX_BUILDING_LEVEL = 3;export const ABANDONMENT_WINDOW_MS = 20000;
+export const MAX_BUILDING_LEVEL = 3;
+export const ABANDONMENT_WINDOW_MS = 20000; // ms of sustained shortage before an industrial building is abandoned
+
 export const BUILDING_CAPACITY = {
     residential: [4, 9, 16],   // population per level
     commercial: [3, 6, 10],    // jobs per level

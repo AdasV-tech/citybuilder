@@ -48,7 +48,7 @@ export class Renderer {
         drawZones(ctx, cityMap, bounds);
         drawRoads(ctx, cityMap, bounds);
         this._drawInfrastructure(ctx, cityMap, infrastructure, bounds);
-        drawBuildings(ctx, cityMap, bounds);
+        drawBuildings(ctx, cityMap, bounds, infrastructure);
         drawCars(ctx, trafficManager);
 
         this._drawHoverAndPreview(ctx, hoverTile, activeTool, dragPreviewTiles, cityMap);
