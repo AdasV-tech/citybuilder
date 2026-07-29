@@ -48,6 +48,15 @@ export class SaveManager {
     hasSave() { return !!localStorage.getItem(SAVE_KEY); }
     hasAutosave() { return !!localStorage.getItem(AUTOSAVE_KEY); }
 
+    clearAllSaves() {
+        const hadSave = this.hasSave();
+        const hadAutosave = this.hasAutosave();
+        if (!hadSave && !hadAutosave) return false;
+        localStorage.removeItem(SAVE_KEY);
+        localStorage.removeItem(AUTOSAVE_KEY);
+        return true;
+    }
+
     loadRaw(useAutosave = false) {
         const raw = localStorage.getItem(useAutosave ? AUTOSAVE_KEY : SAVE_KEY);
         if (!raw) return null;

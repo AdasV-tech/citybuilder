@@ -12,6 +12,7 @@ export class Toolbar {
         this.speedButtons = Array.from(this.root.querySelectorAll('[data-speed]'));
         this.saveBtn = this.root.querySelector('[data-action="save"]');
         this.loadBtn = this.root.querySelector('[data-action="load"]');
+        this.resetBtn = this.root.querySelector('[data-action="reset"]');
         this.pauseBtn = this.root.querySelector('[data-action="pause"]');
 
         this._bind();
@@ -38,6 +39,11 @@ export class Toolbar {
 
         this.saveBtn?.addEventListener('click', () => this.game.saveGame());
         this.loadBtn?.addEventListener('click', () => this.game.loadGame());
+        this.resetBtn?.addEventListener('click', () => {
+            const confirmed = window.confirm('Are you sure you want to delete the whole save?');
+            if (!confirmed) return;
+            this.game.resetGameSaves();
+        });
         this.pauseBtn?.addEventListener('click', () => {
             const paused = this.game.time.togglePaused();
             this.pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';

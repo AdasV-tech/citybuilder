@@ -160,6 +160,17 @@ export class Game {
         eventBus.emit('ui:toast', 'City loaded');
     }
 
+    resetGameSaves() {
+        const cleared = this.saveManager.clearAllSaves();
+        if (!cleared) {
+            eventBus.emit('ui:toast', 'No saved city found');
+            return false;
+        }
+        this._resetMutableState();
+        eventBus.emit('ui:toast', 'All saved city data removed');
+        return true;
+    }
+
     _tryLoadAutosaveOnBoot() {
         // Prefer an explicit save; fall back to the autosave if present.
         const data = this.saveManager.loadRaw(false) || this.saveManager.loadRaw(true);
