@@ -157,6 +157,7 @@ export class Game {
         this._resetMutableState();
         this.saveManager.applyTo(this, data);
         this.infrastructure.rebuildNetworks();
+        this._refreshLoadedState();
         eventBus.emit('ui:toast', 'City loaded');
     }
 
@@ -167,6 +168,7 @@ export class Game {
             return false;
         }
         this._resetMutableState();
+        this._refreshLoadedState();
         eventBus.emit('ui:toast', 'All saved city data removed');
         return true;
     }
@@ -177,7 +179,13 @@ export class Game {
         if (data) {
             this.saveManager.applyTo(this, data);
             this.infrastructure.rebuildNetworks();
+            this._refreshLoadedState();
         }
+    }
+
+    _refreshLoadedState() {
+        this.ui?.update();
+        this._render();
     }
 
     _resetMutableState() {
