@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>CityBuilder — a tiny city sim</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+    <canvas id="game-canvas"></canvas>
+
+    <div id="toast"></div>
+
+    <header id="toolbar">
+        <div class="toolbar-group">
+            <span class="toolbar-title">🏙️ CityBuilder</span>
+        </div>
+
+        <div class="toolbar-group toolbar-tools">
+            <button data-tool="road" class="tool-btn" title="Draw roads">
+                <span class="icon">🛣️</span><span class="label">Road</span>
+            </button>
+            <button data-tool="zone-residential" class="tool-btn zone-residential" title="Zone residential">
+                <span class="icon">🏠</span><span class="label">Residential</span>
+            </button>
+            <button data-tool="zone-commercial" class="tool-btn zone-commercial" title="Zone commercial">
+                <span class="icon">🏬</span><span class="label">Commercial</span>
+            </button>
+            <button data-tool="zone-industrial" class="tool-btn zone-industrial" title="Zone industrial">
+                <span class="icon">🏭</span><span class="label">Industrial</span>
+            </button>
+            <button data-tool="bulldoze" class="tool-btn tool-danger" title="Bulldoze">
+                <span class="icon">🛠️</span><span class="label">Bulldoze</span>
+            </button>
+        </div>
+
+        <div class="toolbar-group toolbar-speed">
+            <button data-speed="slow" class="speed-btn">Slow</button>
+            <button data-speed="normal" class="speed-btn">Normal</button>
+            <button data-speed="fast" class="speed-btn">Fast</button>
+            <button data-action="pause" class="speed-btn pause-btn">⏸ Pause</button>
+        </div>
+
+        <div class="toolbar-group toolbar-save">
+            <button data-action="save" class="save-btn" title="Save game">💾 Save</button>
+            <button data-action="load" class="save-btn" title="Load game">📂 Load</button>
+        </div>
+    </header>
+
+    <footer id="info-bar">
+        <div class="info-item">
+            <span class="info-label">Money</span>
+            <span class="info-value" data-info="money">§0</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Population</span>
+            <span class="info-value" data-info="population">0</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Jobs</span>
+            <span class="info-value" data-info="jobs">0</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Day</span>
+            <span class="info-value" data-info="day">Day 1</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Speed</span>
+            <span class="info-value" data-info="speed">Normal</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Income</span>
+            <span class="info-value positive" data-info="income">+§0</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Expenses</span>
+            <span class="info-value negative" data-info="expenses">-§0</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Cars</span>
+            <span class="info-value" data-info="cars">0</span>
+        </div>
+    </footer>
+
+    <div id="help-hint">
+        Left-drag: use tool &nbsp;•&nbsp; Right-drag / space+drag: pan &nbsp;•&nbsp; Scroll: zoom
+    </div>
+
+    <div id="infra-legend">
+        <div class="legend-title">Infrastructure</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#5dd8ff">W</span> Water pump</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#5b8e8b">S</span> Sewage outlet</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#ffd166;color:#102234">E</span> Power plant</div>
+        <div class="legend-row"><span class="legend-line" style="background:#5dd8ff"></span> Water pipe (on roads)</div>
+        <div class="legend-row"><span class="legend-line" style="background:#ffdc5a"></span> Power line (on roads)</div>
+        <div class="legend-note">Buildings outside coverage grow slower and are less happy.</div>
+    </div>
+
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
