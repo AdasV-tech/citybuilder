@@ -213,6 +213,19 @@ html, body {
     white-space: nowrap;
 }
 
+#version-badge {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    background: rgba(20, 26, 34, 0.6);
+    padding: 4px 8px;
+    border-radius: 999px;
+    z-index: 10;
+    pointer-events: none;
+}
+
 @media (max-width: 720px) {
     .toolbar-title { display: none; }
     .tool-btn .label, .save-btn .label { display: none; }
