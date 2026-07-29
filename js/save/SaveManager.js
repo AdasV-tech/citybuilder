@@ -85,6 +85,10 @@ export class SaveManager {
         game.economy.restore(data.economy || {});
         game.time.restore(data.time || {});
 
+        game.trafficManager.cars = [];
+        game.trafficManager._spawnCooldown = 0;
+        game.infrastructure.rebuildNetworks();
+
         return true;
     }
 }

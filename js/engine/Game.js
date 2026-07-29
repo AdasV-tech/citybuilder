@@ -184,6 +184,7 @@ export class Game {
     }
 
     _refreshLoadedState() {
+        this.infrastructure?.rebuildNetworks();
         this.ui?.update();
         this._render();
     }
@@ -199,7 +200,13 @@ export class Game {
         this.roadNetwork.roadTiles.clear();
         this.zoneManager.buildings = [];
         this.trafficManager.cars = [];
+        this.trafficManager._spawnCooldown = 0;
         this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
+        this.economy = new EconomyManager();
+        this.time = new TimeManager(this.time?.speed || 'normal');
+        this.time.paused = false;
+        this.time.msIntoDay = 0;
+        this.time.day = 1;
         // Deliberately does NOT recreate the starter highway: loadGame() is
         // about to apply saved data, which is the source of truth for what
         // roads should exist (including if the player bulldozed the highway
