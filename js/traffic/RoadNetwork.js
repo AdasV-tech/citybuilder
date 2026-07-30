@@ -1,95 +1,153 @@
 // js/traffic/RoadNetwork.js
-// Tracks which tiles have roads and keeps their connection bitmasks up to date
-// whenever a road is added/removed nearby. Also exposes the adjacency graph
-// that the Pathfinder walks over.
+// Tracks road tiles, their connection bitmasks (for drawing junctions and for
+// pathfinding), their type (street/avenue) and their live congestion. Also
+// counts pipe/wire tiles so the economy can bill for them.
 
 export const DIR = Object.freeze({ N: 1, E: 2, S: 4, W: 8 });
 
-const NEIGHBOR_OFFSETS = [
-    { dx: 0, dy: -1, bit: DIR.N, opposite: DIR.S },
-    { dx: 1, dy: 0, bit: DIR.E, opposite: DIR.W },
-    { dx: 0, dy: 1, bit: DIR.S, opposite: DIR.N },
-    { dx: -1, dy: 0, bit: DIR.W, opposite: DIR.E }
+const NEIGHBORS = [
+    { dx: 0, dy: -1, bit: DIR.N },
+    { dx: 1, dy: 0, bit: DIR.E },
+    { dx: 0, dy: 1, bit: DIR.S },
+    { dx: -1, dy: 0, bit: DIR.W }
 ];
 
 export class RoadNetwork {
     constructor(cityMap) {
         this.map = cityMap;
-        this.roadTiles = new Set(); // "x,y" keys, mirrors tile.road existing
+        this.roadTiles = new Set();   // "x,y"
+        this.version = 0;             // bumped on any change; invalidates the path cache
     }
-
-    key(x, y) { return `${x},${y}`; }
 
     hasRoad(x, y) {
         const tile = this.map.getTile(x, y);
         return !!(tile && tile.road);
     }
 
-    /** Place a road tile. Returns true if a new road was actually created. */
-    placeRoad(x, y) {
-        const tile = this.map.getTile(x, y);
-        if (!tile) return false;
-        if (tile.road) return false; // already a road
-        if (tile.isWater) return false;
-        if (tile.building || tile.zoneType) return false; // can't pave over zoned/built lots
-
-        tile.clearNature();
-        tile.road = { connections: 0, serviceMask: 0 };
-        this.roadTiles.add(this.key(x, y));
-        this._updateConnections(x, y);
-        return true;
+    roadType(x, y) {
+        return this.map.getTile(x, y)?.road?.type ?? null;
     }
 
-    /** Remove a road tile. Returns true if something was removed. */
+    /** Place (or upgrade) a road. Returns 'placed' | 'upgraded' | null. */
+    placeRoad(x, y, type = 'street') {
+        const tile = this.map.getTile(x, y);
+        if (!tile) return null;
+        if (tile.isWater || tile.isRock) return null;
+        if (tile.building || tile.structure) return null;
+
+        if (tile.road) {
+            if (tile.road.type === type) return null;
+            tile.road.type = type;
+            this.version++;
+            return 'upgraded';
+        }
+
+        tile.clearTrees();
+        tile.zone = null;
+        tile.growth = 0;
+        tile.road = { type, connections: 0, cars: 0, congestion: 0 };
+        this.roadTiles.add(`${x},${y}`);
+        this._refreshConnections(x, y);
+        this.version++;
+        return 'placed';
+    }
+
     removeRoad(x, y) {
         const tile = this.map.getTile(x, y);
         if (!tile || !tile.road) return false;
         tile.road = null;
-        this.roadTiles.delete(this.key(x, y));
-        this._updateConnections(x, y);
+        this.roadTiles.delete(`${x},${y}`);
+        this._refreshConnections(x, y);
+        this.version++;
         return true;
     }
 
-    /** Recompute this tile's and its neighbors' connection bitmasks. */
-    _updateConnections(x, y) {
-        for (const { dx, dy } of [{ dx: 0, dy: 0 }, ...NEIGHBOR_OFFSETS]) {
-            const tx = x + dx, ty = y + dy;
+    _refreshConnections(x, y) {
+        const update = (tx, ty) => {
             const tile = this.map.getTile(tx, ty);
-            if (!tile || !tile.road) continue;
+            if (!tile || !tile.road) return;
             let mask = 0;
-            for (const n of NEIGHBOR_OFFSETS) {
+            for (const n of NEIGHBORS) {
                 if (this.hasRoad(tx + n.dx, ty + n.dy)) mask |= n.bit;
             }
             tile.road.connections = mask;
-        }
+        };
+        update(x, y);
+        for (const n of NEIGHBORS) update(x + n.dx, y + n.dy);
     }
 
-    /** Returns array of {x,y} neighboring road tiles connected to (x,y). */
     getConnectedNeighbors(x, y) {
         const results = [];
-        for (const n of NEIGHBOR_OFFSETS) {
+        for (const n of NEIGHBORS) {
             const nx = x + n.dx, ny = y + n.dy;
             if (this.hasRoad(nx, ny)) results.push({ x: nx, y: ny });
         }
         return results;
     }
 
-    /** Find the nearest road tile to (x, y) within a small search radius, or null. */
+    /** Nearest road tile within `maxRadius`, searched in expanding rings. */
     findNearestRoad(x, y, maxRadius = 4) {
         if (this.hasRoad(x, y)) return { x, y };
         for (let r = 1; r <= maxRadius; r++) {
-            for (let dx = -r; dx <= r; dx++) {
-                for (let dy = -r; dy <= r; dy++) {
+            for (let dy = -r; dy <= r; dy++) {
+                for (let dx = -r; dx <= r; dx++) {
                     if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-                    const tx = x + dx, ty = y + dy;
-                    if (this.hasRoad(tx, ty)) return { x: tx, y: ty };
+                    if (this.hasRoad(x + dx, y + dy)) return { x: x + dx, y: y + dy };
                 }
             }
         }
         return null;
     }
 
-    get totalRoadTiles() {
-        return this.roadTiles.size;
+    hasAdjacentRoad(x, y) {
+        return this.hasRoad(x - 1, y) || this.hasRoad(x + 1, y) ||
+               this.hasRoad(x, y - 1) || this.hasRoad(x, y + 1);
+    }
+
+    get totalRoadTiles() { return this.roadTiles.size; }
+
+    tileCountsByType() {
+        let street = 0, avenue = 0;
+        for (const tile of this.map.tiles) {
+            if (!tile.road) continue;
+            if (tile.road.type === 'avenue') avenue++; else street++;
+        }
+        return { street, avenue };
+    }
+
+    get utilityTileCount() {
+        let pipe = 0, wire = 0;
+        for (const tile of this.map.tiles) {
+            if (tile.pipe) pipe++;
+            if (tile.wire) wire++;
+        }
+        return { pipe, wire };
+    }
+
+    /** Called by TrafficManager with fresh per-tile car counts. */
+    applyCongestion(counts, capacityFor) {
+        for (const tile of this.map.tiles) {
+            if (!tile.road) continue;
+            const cars = counts.get(`${tile.x},${tile.y}`) ?? 0;
+            tile.road.cars = cars;
+            const target = Math.min(1, cars / capacityFor(tile.road.type));
+            // Ease toward the target so the traffic view doesn't strobe.
+            tile.road.congestion += (target - tile.road.congestion) * 0.25;
+        }
+    }
+
+    serialize() {
+        const out = [];
+        for (const tile of this.map.tiles) {
+            if (tile.road) out.push([tile.x, tile.y, tile.road.type === 'avenue' ? 1 : 0]);
+        }
+        return out;
+    }
+
+    restore(data = []) {
+        this.roadTiles.clear();
+        for (const [x, y, isAvenue] of data) {
+            this.placeRoad(x, y, isAvenue ? 'avenue' : 'street');
+        }
     }
 }

@@ -1,349 +1,424 @@
 // js/engine/Game.js
-// The composition root. Creates every system, wires them together, and owns
-// the update/render loop. Keeping this file focused on *wiring* (rather than
-// logic) is what makes it feasible to add new systems (water, power, services...)
-// later without a rewrite: they just plug in here the same way traffic/zoning do.
+// Composition root: builds every system, owns the update/render loop and
+// exposes the handful of "the player did a thing" actions the tools call.
+// Deliberately thin on logic — each system owns its own rules — so new systems
+// (transit, districts, policies…) can be added by wiring them in here.
 
-import { MAP_WIDTH, MAP_HEIGHT } from '../utils/Constants.js';
+import {
+    MAP_SIZE, FIELD_REBUILD_MS, UTILITY_REBUILD_MS, AUTOSAVE_MS,
+    COST_PER_TILE, ZOOM_MAX
+} from '../utils/Constants.js';
 import { CityMap } from '../simulation/CityMap.js';
 import { TimeManager } from '../simulation/TimeManager.js';
 import { EconomyManager } from '../simulation/EconomyManager.js';
+import { ServiceManager } from '../simulation/ServiceManager.js';
+import { UtilityGrid } from '../simulation/UtilityGrid.js';
+import { FieldManager } from '../simulation/FieldManager.js';
+import { DemandManager } from '../simulation/DemandManager.js';
+import { MilestoneManager } from '../simulation/MilestoneManager.js';
+import { Advisor } from '../simulation/Advisor.js';
+import { ZoneManager } from '../zoning/ZoneManager.js';
 import { RoadNetwork } from '../traffic/RoadNetwork.js';
 import { Pathfinder } from '../traffic/Pathfinder.js';
 import { TrafficManager } from '../traffic/TrafficManager.js';
-import { ZoneManager } from '../zoning/ZoneManager.js';
 import { Camera } from './Camera.js';
 import { InputHandler } from './InputHandler.js';
 import { GameLoop } from './GameLoop.js';
 import { Renderer } from '../rendering/Renderer.js';
 import { UIManager } from '../ui/UIManager.js';
 import { SaveManager } from '../save/SaveManager.js';
-import { InfrastructureManager } from '../simulation/InfrastructureManager.js';
+import { getService } from '../data/ServiceCatalog.js';
 import { eventBus } from '../utils/EventBus.js';
 
+const SIM_STEP_MS = 200;      // fixed simulation step for buildings/growth
+const MAX_STEPS_PER_FRAME = 6;
+
 export class Game {
-    constructor(canvas) {
+    constructor(canvas, options = {}) {
         this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
+        this.ctx = canvas.getContext('2d', { alpha: false });
+        this.cityName = options.cityName ?? 'Riverside';
 
-        // --- simulation state ---
-        this.cityMap = new CityMap(MAP_WIDTH, MAP_HEIGHT, 1337);
-        this.roadNetwork = new RoadNetwork(this.cityMap);
-        this.pathfinder = new Pathfinder(this.roadNetwork);
-        this.zoneManager = new ZoneManager(this.cityMap, this.roadNetwork);
-        this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
-        this.time = new TimeManager('normal');
-        this.economy = new EconomyManager();
-        this.trafficManager = new TrafficManager(this.roadNetwork, this.pathfinder, this.zoneManager, this.time);
+        this._buildWorld(options.seed ?? (Date.now() % 1000000));
 
-        // --- engine / view ---
-        this.camera = new Camera(canvas, this.cityMap.width, this.cityMap.height);
-        this.renderer = new Renderer(this.ctx, canvas, this.camera);
-
-        // --- ui + input (UI creates the ToolController that input drives) ---
-        this.ui = new UIManager(this);
-        this.input = new InputHandler(canvas, this.camera, this.ui.toolController);
-
+        this.camera = new Camera(this.cityMap.width, this.cityMap.height);
+        this.renderer = new Renderer(this.ctx, canvas, this.camera, this.cityMap);
         this.saveManager = new SaveManager();
 
-        this._lastDay = this.time.day;
+        this.ui = new UIManager(this);
+        this.input = new InputHandler(canvas, this.camera, this.ui.tools, {
+            onHotkey: (key, event) => this.ui.handleHotkey(key, event),
+            onCancel: () => this.ui.cancelCurrent(),
+            onTogglePause: () => this.setSpeed(this.time.togglePause() ? 0 : this.time.lastRunningSpeed)
+        });
+
+        this._simAccumulator = 0;
+        this._fieldTimer = FIELD_REBUILD_MS;
+        this._utilityTimer = UTILITY_REBUILD_MS;
         this._autosaveTimer = 0;
-        this._upgradeTimer = 0;
 
         this.loop = new GameLoop(this._update.bind(this), this._render.bind(this));
 
-        this._resizeCanvasToDisplaySize();
-        window.addEventListener('resize', () => this._resizeCanvasToDisplaySize());
+        this._resize();
+        window.addEventListener('resize', () => this._resize());
+        this._bindEvents();
 
-        // The starter highway is only for a fresh city. If a save already
-        // exists we skip it entirely, otherwise it would silently reappear
-        // every reload even after the player bulldozed it and saved.
-        const hasExistingSave = this.saveManager.hasSave() || this.saveManager.hasAutosave();
-        if (!hasExistingSave) {
-            this._createMainHighway();
+        this.camera.centerOnTile(this.cityMap.start.x, this.cityMap.start.y, 1.1);
+
+        const restored = this._loadOnBoot();
+        if (!restored) {
+            this._seedStartingCity();
+            this._welcome();
         }
-        this.infrastructure.rebuildNetworks();
-        this._tryLoadAutosaveOnBoot();
+        this._refreshAll();
     }
 
-    start() {
-        this.loop.start();
+    start() { this.loop.start(); }
+
+    // --- construction ---------------------------------------------------------
+
+    _buildWorld(seed) {
+        this.cityMap = new CityMap(MAP_SIZE, MAP_SIZE, seed);
+        this.roads = new RoadNetwork(this.cityMap);
+        this.pathfinder = new Pathfinder(this.roads);
+        this.zones = new ZoneManager(this.cityMap, this.roads);
+        this.services = new ServiceManager(this.cityMap);
+        this.utilities = new UtilityGrid(this.cityMap, this.services, this.zones);
+        this.fields = new FieldManager(this.cityMap, this.services, this.zones, this.roads);
+        this.demand = new DemandManager();
+        this.economy = new EconomyManager();
+        this.time = new TimeManager(1);
+        this.milestones = new MilestoneManager();
+        this.advisor = new Advisor();
+        this.traffic = new TrafficManager(this.roads, this.pathfinder, this.zones, this.time);
     }
 
-    _resizeCanvasToDisplaySize() {
+    get stats() { return this.zones.stats; }
+
+    _bindEvents() {
+        eventBus.on('time:newMonth', () => {
+            this.economy.settleMonth({
+                buildings: this.zones.buildings,
+                roadNetwork: this.roads,
+                serviceManager: this.services,
+                educationLevel: this.fields.averages.education
+            });
+        });
+        eventBus.on('building:spawned', (building) => this.renderer.invalidateTile(building.x, building.y));
+        eventBus.on('building:abandoned', (building) => this.renderer.invalidateTile(building.x, building.y));
+    }
+
+    /**
+     * First-run guidance. Without power and water nothing will ever grow, and
+     * with an empty city the advisor has no problem to report yet — so the
+     * opening moves are spelled out once.
+     */
+    _welcome() {
+        eventBus.emit('ui:notify', {
+            id: 'welcome', icon: '🏙️', kind: 'info',
+            title: `Welcome to ${this.cityName}`,
+            body: 'Zone land beside a road (🏘️), then give it electricity (⚡) and water (💧). Buildings only grow where all three meet.'
+        });
+    }
+
+    /** A short starter road so a brand new city has somewhere to zone against. */
+    _seedStartingCity() {
+        const { x, y } = this.cityMap.start;
+        for (let i = -8; i <= 8; i++) {
+            this.roads.placeRoad(x + i, y, 'street');
+            this.roads.placeRoad(x, y + i, 'street');
+        }
+        this.renderer.invalidateAll();
+    }
+
+    _resize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const displayWidth = this.canvas.clientWidth;
-        const displayHeight = this.canvas.clientHeight;
-        this.canvas.width = Math.round(displayWidth * dpr);
-        this.canvas.height = Math.round(displayHeight * dpr);
-        // Ensure the canvas is displayed at the correct CSS size while the
-        // drawing surface is scaled for HiDPI. Set an appropriate transform
-        // on the context so rendering code can continue using logical pixels.
-        try {
-            this.canvas.style.width = displayWidth + 'px';
-            this.canvas.style.height = displayHeight + 'px';
-            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        } catch (e) {
-            // Some older contexts may not support setTransform; fall back to scale.
-            this.ctx.scale(dpr, dpr);
-        }
-        this.renderer?.resize?.(displayWidth, displayHeight, dpr);
+        const cssWidth = this.canvas.clientWidth || window.innerWidth;
+        const cssHeight = this.canvas.clientHeight || window.innerHeight;
+        this.canvas.width = Math.round(cssWidth * dpr);
+        this.canvas.height = Math.round(cssHeight * dpr);
+        this.camera.resize(cssWidth, cssHeight, dpr);
     }
 
-    // --- tool actions (called by ToolController) -----------------------------
+    // --- player actions ---------------------------------------------------------
 
-    _createMainHighway() {
-        const centerX = Math.floor(this.cityMap.width / 2);
-        const centerY = Math.floor(this.cityMap.height / 2);
-        for (let y = 8; y < this.cityMap.height - 8; y++) {
-            this.roadNetwork.placeRoad(centerX, y);
-        }
-        for (let x = 8; x < this.cityMap.width - 8; x++) {
-            this.roadNetwork.placeRoad(x, centerY);
-        }
-        this.pathfinder.clearCache?.();
-        this.renderer?.invalidateStaticCache?.();
-    }
-
-    placeRoads(tiles) {
-        let placedCount = 0;
-        const placeable = tiles.filter(t => {
+    placeRoads(tiles, type = 'street') {
+        let cost = 0;
+        for (const t of tiles) {
             const tile = this.cityMap.getTile(t.x, t.y);
-            return tile && !tile.road && !tile.isWater && !tile.building && !tile.zoneType;
-        });
-        const cost = this.economy.roadCost(placeable.length);
-        if (placeable.length === 0) return;
-        if (!this.economy.canAfford(cost)) {
-            eventBus.emit('ui:toast', `Not enough money (need §${cost})`);
-            return;
+            cost += COST_PER_TILE[type] * (tile?.road ? 0.6 : 1);
         }
-        for (const t of placeable) {
-            if (this.roadNetwork.placeRoad(t.x, t.y)) placedCount++;
+        if (!this.economy.spend(Math.round(cost), 'road')) return;
+
+        for (const t of tiles) {
+            if (this.roads.placeRoad(t.x, t.y, type)) this.renderer.invalidateArea(t.x - 1, t.y - 1, 3, 3);
         }
-        if (placedCount > 0) {
-            this.economy.spend(this.economy.roadCost(placedCount));
-            this.infrastructure.rebuildNetworks();
-            this.pathfinder.clearCache?.();
-            this.renderer?.invalidateStaticCache?.();
-        }
+        this.pathfinder.clearCache();
+        this._markUtilitiesDirty();
+        this.ui.audio.playBuild();
     }
 
-    placeZones(tiles, zoneType) {
-        const placeable = tiles.filter(t => {
-            const tile = this.cityMap.getTile(t.x, t.y);
-            return tile && tile.isEmptyZonable;
-        });
-        if (placeable.length === 0) return;
-        const cost = this.economy.zoneCost(placeable.length);
-        if (!this.economy.canAfford(cost)) {
-            eventBus.emit('ui:toast', `Not enough money (need §${cost})`);
-            return;
+    placeZones(tiles, zone) {
+        const cost = tiles.length * COST_PER_TILE.zone;
+        if (!this.economy.spend(cost, 'zone')) return;
+        for (const t of tiles) {
+            if (this.zones.zoneTile(t.x, t.y, zone)) this.renderer.invalidateTile(t.x, t.y);
         }
-        let count = 0;
-        for (const t of placeable) {
-            if (this.zoneManager.zoneTile(t.x, t.y, zoneType)) count++;
-        }
-        if (count > 0) this.economy.spend(this.economy.zoneCost(count));
-        this.renderer?.invalidateStaticCache?.();
+        this.ui.audio.playZone();
     }
 
-    placeUtilities(tiles, utilityType) {
-        const placeable = tiles.filter(t => {
-            const tile = this.cityMap.getTile(t.x, t.y);
-            if (!tile || tile.isWater || tile.road || tile.building) return false;
-            if (utilityType === 'waterPipe') return !tile.waterPipe;
-            if (utilityType === 'powerLine') return !tile.powerLine;
-            return false;
-        });
-        if (placeable.length === 0) return;
-        const cost = this.economy.utilityCost(placeable.length);
-        if (!this.economy.canAfford(cost)) {
-            eventBus.emit('ui:toast', `Not enough money (need §${cost})`);
-            return;
+    dezone(tiles) {
+        for (const t of tiles) {
+            if (this.zones.unzoneTile(t.x, t.y)) this.renderer.invalidateTile(t.x, t.y);
         }
-        for (const t of placeable) {
-            const tile = this.cityMap.getTile(t.x, t.y);
-            if (!tile) continue;
-            if (utilityType === 'waterPipe') tile.waterPipe = true;
-            if (utilityType === 'powerLine') tile.powerLine = true;
-        }
-        this.economy.spend(cost);
-        this.infrastructure.rebuildNetworks();
-        this.renderer?.invalidateStaticCache?.();
+        this.zones.refreshStats();
+        this._markUtilitiesDirty();
     }
 
-    bulldoze(tiles) {
+    placeUtilities(tiles, kind) {
+        const cost = tiles.length * COST_PER_TILE[kind];
+        if (!this.economy.spend(cost, kind)) return;
         for (const t of tiles) {
             const tile = this.cityMap.getTile(t.x, t.y);
             if (!tile) continue;
-            if (tile.road) this.roadNetwork.removeRoad(t.x, t.y);
-            if (tile.zoneType || tile.building) this.zoneManager.unzoneTile(t.x, t.y);
-            tile.waterPipe = false;
-            tile.powerLine = false;
-            tile.clearNature();
+            tile.clearTrees();
+            if (kind === 'pipe') tile.pipe = true; else tile.wire = true;
+            this.renderer.invalidateTile(t.x, t.y);
         }
-        this.infrastructure.rebuildNetworks();
-        this.pathfinder.clearCache?.();
-        this.renderer?.invalidateStaticCache?.();
+        this._markUtilitiesDirty();
+        this.ui.audio.playBuild();
     }
 
-    // --- save / load -----------------------------------------------------------
-
-    saveGame() {
-        this.saveManager.save(this);
-        eventBus.emit('ui:toast', 'City saved');
-    }
-
-    loadGame() {
-        const data = this.saveManager.loadRaw(false);
-        if (!data) {
-            eventBus.emit('ui:toast', 'No saved city found');
+    placeService(defId, x, y) {
+        const def = getService(defId);
+        if (!def) return;
+        if (!this.milestones.isUnlocked(def.unlockPop)) {
+            eventBus.emit('ui:toast', { text: `${def.name} is not unlocked yet`, kind: 'warn' });
             return;
         }
-        this._resetMutableState();
-        this.saveManager.applyTo(this, data);
-        this.infrastructure.rebuildNetworks();
-        this._refreshLoadedState();
-        eventBus.emit('ui:toast', 'City loaded');
-    }
-
-    resetGameSaves() {
-        const cleared = this.saveManager.clearAllSaves();
-        if (!cleared) {
-            eventBus.emit('ui:toast', 'No saved city found');
-            return false;
+        if (!this.economy.canAfford(def.cost)) {
+            eventBus.emit('ui:toast', { text: 'Not enough money', kind: 'bad' });
+            return;
         }
-        this._resetMutableState();
-        this._refreshLoadedState();
-        eventBus.emit('ui:toast', 'All saved city data removed');
-        return true;
-    }
-
-    _tryLoadAutosaveOnBoot() {
-        // Prefer an explicit save; fall back to the autosave if present.
-        const data = this.saveManager.loadRaw(false) || this.saveManager.loadRaw(true);
-        if (data) {
-            this.saveManager.applyTo(this, data);
-            this.infrastructure.rebuildNetworks();
-            this._refreshLoadedState();
-            this.pathfinder.clearCache?.();
-            this.renderer?.invalidateStaticCache?.();
+        const structure = this.services.place(defId, x, y, this.time.totalDays);
+        if (!structure) {
+            eventBus.emit('ui:toast', { text: 'Cannot build here', kind: 'bad' });
+            return;
         }
+        this.economy.spend(def.cost, 'service');
+        this.renderer.invalidateArea(x - 1, y - 1, def.size + 2, def.size + 2);
+        this._markUtilitiesDirty();
+        this.ui.audio.playBuild();
+        eventBus.emit('ui:toast', { text: `${def.name} built`, kind: 'good' });
     }
 
-    _refreshLoadedState() {
-        this.infrastructure?.rebuildNetworks();
-        this.ui?.update();
-        this._render();
-        this.renderer?.invalidateStaticCache?.();
+    bulldoze(tiles) {
+        let refund = 0;
+        let cost = 0;
+
+        for (const t of tiles) {
+            const tile = this.cityMap.getTile(t.x, t.y);
+            if (!tile || !tile.hasAnything) continue;
+
+            if (tile.structure) {
+                const structure = tile.structure;
+                refund += this.services.remove(structure);
+                this.renderer.invalidateArea(structure.x - 1, structure.y - 1, structure.size + 2, structure.size + 2);
+                continue;
+            }
+            cost += COST_PER_TILE.bulldoze;
+            if (tile.road) this.roads.removeRoad(t.x, t.y);
+            if (tile.zone || tile.building) this.zones.unzoneTile(t.x, t.y);
+            tile.pipe = false;
+            tile.wire = false;
+            tile.clearTrees();
+            this.renderer.invalidateArea(t.x - 1, t.y - 1, 3, 3);
+        }
+
+        if (cost > 0) this.economy.spend(Math.round(cost), 'bulldoze');
+        if (refund > 0) this.economy.earn(refund, 'demolition refund');
+        this.zones.refreshStats();
+        this.pathfinder.clearCache();
+        this._markUtilitiesDirty();
+        this.ui.audio.playBulldoze();
     }
 
-    _resetMutableState() {
-        // Wipe player-built content but keep the same terrain (same seed/map).
-        this.cityMap.forEachTile(tile => {
-            tile.road = null;
-            tile.zoneType = null;
-            tile.building = null;
-            tile.waterPipe = false;
-            tile.powerLine = false;
-            tile.growthTimer = 0;
-        });
-        this.roadNetwork.roadTiles.clear();
-        this.zoneManager.buildings = [];
-        this.trafficManager.cars = [];
-        this.trafficManager._spawnCooldown = 0;
-        this.infrastructure = new InfrastructureManager(this.cityMap, this.roadNetwork);
-        this.economy = new EconomyManager();
-        this.time = new TimeManager(this.time?.speed || 'normal');
-        this.time.paused = false;
-        this.time.msIntoDay = 0;
-        this.time.day = 1;
-        // Deliberately does NOT recreate the starter highway: loadGame() is
-        // about to apply saved data, which is the source of truth for what
-        // roads should exist (including if the player bulldozed the highway
-        // before saving).
+    setSpeed(speed) {
+        this.time.setSpeed(speed);
     }
 
-    // --- main loop --------------------------------------------------------------
+    _markUtilitiesDirty() {
+        this._utilityTimer = UTILITY_REBUILD_MS;
+        this._fieldTimer = Math.max(this._fieldTimer, FIELD_REBUILD_MS * 0.6);
+    }
+
+    // --- simulation ---------------------------------------------------------------
 
     _update(dtMs) {
         this.camera.update(dtMs / 1000);
-        this.time.update(dtMs);
+        this.input.update(dtMs / 1000);
 
-        if (this.time.paused) return;
+        const simDt = this.time.update(dtMs);
 
-        const simDtMs = dtMs * this.time.simMultiplier;
+        if (simDt > 0) {
+            this._utilityTimer += simDt;
+            if (this._utilityTimer >= UTILITY_REBUILD_MS) {
+                this._utilityTimer = 0;
+                this.utilities.rebuild();
+            }
 
-        this.zoneManager.update(simDtMs);
-        this._updateBuildingStats(simDtMs);
-        this.trafficManager.update(simDtMs);
+            this._fieldTimer += simDt;
+            if (this._fieldTimer >= FIELD_REBUILD_MS) {
+                this._fieldTimer = 0;
+                this.fields.rebuild();
+            }
 
-        if (this.time.day !== this._lastDay) {
-            this._lastDay = this.time.day;
-            this.economy.settleDailyBudget(this.zoneManager, this.roadNetwork);
+            this.traffic.update(simDt);
+
+            this._simAccumulator += simDt;
+            let steps = 0;
+            while (this._simAccumulator >= SIM_STEP_MS && steps < MAX_STEPS_PER_FRAME) {
+                this._simAccumulator -= SIM_STEP_MS;
+                steps++;
+                this._simulationStep(SIM_STEP_MS);
+            }
+            if (steps === MAX_STEPS_PER_FRAME) this._simAccumulator = 0;
         }
 
         this._autosaveTimer += dtMs;
-        if (this._autosaveTimer > 30000) {
+        if (this._autosaveTimer >= AUTOSAVE_MS) {
             this._autosaveTimer = 0;
             this.saveManager.autosave(this);
         }
 
-        this.ui.update();
+        this.ui.update(dtMs);
     }
 
-    _updateBuildingStats(dtMs) {
-        const pop = this.zoneManager.totalPopulation;
-        const jobs = this.zoneManager.totalJobs;
-        // Simple city-wide demand model: residential demand rises with available
-        // jobs, job demand rises with available population, giving a soft
-        // supply/demand loop without needing a full economic simulation.
-        const residentialDemand = Math.min(1, 0.35 + jobs / Math.max(20, pop + 20));
-        const jobDemand = Math.min(1, 0.35 + pop / Math.max(20, jobs + 20));
-        const congestionPenalty = Math.min(0.3, this.trafficManager.carCount / 400);
+    _simulationStep(stepMs) {
+        this.zones.update(stepMs, {
+            demand: this.demand,
+            fields: this.fields,
+            taxes: this.economy.taxes
+        });
 
-        this._upgradeTimer += dtMs;
-        const shouldCheckUpgrade = this._upgradeTimer > 10000;
-        if (shouldCheckUpgrade) this._upgradeTimer = 0;
+        const stats = this.zones.stats;
+        const shares = this.zones.zoneShares;
+        this.demand.update(stepMs, {
+            population: stats.population,
+            jobs: stats.jobs,
+            commercialJobs: stats.commercialJobs,
+            industrialJobs: stats.industrialJobs,
+            happiness: this.zones.averageHappiness,
+            commercialShare: shares.commercial,
+            industrialShare: shares.industrial,
+            taxes: this.economy.taxes
+        });
 
-        const alerts = this.trafficManager._evaluateServiceAlerts({ residentialPopulation: pop, jobs });
-        for (const alert of alerts) {
-            if (!alert.building.workerAlertShown) {
-                eventBus.emit('ui:toast', alert.message);
-                alert.building.workerAlertShown = true;
-            }
-        }
-
-        const buildingsSnapshot = [...this.zoneManager.buildings];
-        for (const b of buildingsSnapshot) {
-            const serviceFactor = this.infrastructure.getServiceAccessFactor(b.x, b.y);
-            const demand = b.isResidential ? residentialDemand : jobDemand;
-            b.updateOccupancy(dtMs, demand * serviceFactor);
-            const abandoned = b.updateServiceState(dtMs, { jobs, residentialPopulation: pop, abandonmentWindowMs: 20000 });
-            if (abandoned) {
-                const tile = this.cityMap.getTile(b.x, b.y);
-                if (tile) {
-                    tile.building = null;
-                    tile.growthTimer = 0; // lot sits vacant for a full growth cycle before it can regrow
-                }
-                this.zoneManager.buildings = this.zoneManager.buildings.filter(existing => existing !== b);
-                continue;
-            }
-            b.updateHappiness({ taxRateComfort: 0.1, congestionPenalty, serviceCoverage: serviceFactor });
-            if (shouldCheckUpgrade) b.tryUpgrade();
-        }
+        this.milestones.update(stats.population, this.economy);
+        this.advisor.update(stepMs, this);
     }
 
     _render() {
         this.renderer.render({
             cityMap: this.cityMap,
-            roadNetwork: this.roadNetwork,
-            zoneManager: this.zoneManager,
-            trafficManager: this.trafficManager,
-            infrastructure: this.infrastructure,
-            hoverTile: this.ui.toolController.hoverTile,
-            activeTool: this.ui.toolController.activeTool,
-            dragPreviewTiles: this.ui.toolController.previewTiles
+            fields: this.fields,
+            trafficManager: this.traffic,
+            dataView: this.ui.dataView,
+            preview: this.ui.tools.preview,
+            hover: this.ui.tools.hover,
+            selection: this.ui.tools.selection,
+            night: this.time.nightFactor > 0.35,
+            nightFactor: this.time.nightFactor
         });
+    }
+
+    /** Restore the most recent save on boot; returns false for a fresh city. */
+    _loadOnBoot() {
+        const data = this.saveManager.loadRaw(false) || this.saveManager.loadRaw(true);
+        if (!data) return false;
+        this.applySave(data);
+        return true;
+    }
+
+    // --- save / load ------------------------------------------------------------------
+
+    _refreshAll() {
+        this.utilities.rebuild();
+        this.fields.rebuild();
+        this.renderer.invalidateAll();
+        this.ui.refresh();
+    }
+
+    saveGame() {
+        this.saveManager.save(this);
+        eventBus.emit('ui:toast', { text: 'City saved', kind: 'good' });
+    }
+
+    loadGame() {
+        const data = this.saveManager.loadRaw(false) || this.saveManager.loadRaw(true);
+        if (!data) {
+            eventBus.emit('ui:toast', { text: 'No saved city found', kind: 'warn' });
+            return false;
+        }
+        this.applySave(data);
+        eventBus.emit('ui:toast', { text: 'City loaded', kind: 'good' });
+        return true;
+    }
+
+    applySave(data) {
+        if (data.seed !== undefined && data.seed !== this.cityMap.seed) {
+            this._buildWorld(data.seed);
+            this.renderer.setMap(this.cityMap);
+        }
+        this.resetCity({ silent: true, keepSeed: true });
+        this.saveManager.applyTo(this, data);
+        this.traffic.reset();
+        this.pathfinder.clearCache();
+        this.advisor.reset();
+        this._refreshAll();
+    }
+
+    /** Wipe everything the player built, keeping the same terrain. */
+    resetCity({ silent = false, keepSeed = true } = {}) {
+        if (!keepSeed) this._buildWorld(Date.now() % 1000000);
+
+        this.zones.clear();
+        this.services.clear();
+        for (const tile of this.cityMap.tiles) {
+            if (tile.road) this.roads.removeRoad(tile.x, tile.y);
+            tile.pipe = false;
+            tile.wire = false;
+            tile.powered = false;
+            tile.watered = false;
+        }
+        this.roads.roadTiles.clear();
+        this.traffic.reset();
+        this.pathfinder.clearCache();
+        this.economy = new EconomyManager();
+        this.demand = new DemandManager();
+        this.milestones = new MilestoneManager();
+        this.time = new TimeManager(1);
+        this.advisor.reset();
+        this.utilities = new UtilityGrid(this.cityMap, this.services, this.zones);
+        this.traffic.time = this.time;
+
+        if (!silent) {
+            this._seedStartingCity();
+            this._refreshAll();
+            eventBus.emit('ui:toast', { text: 'New city started', kind: 'good' });
+        }
+    }
+
+    newCity() {
+        this._buildWorld(Date.now() % 1000000);
+        this.renderer.setMap(this.cityMap);
+        this.camera.centerOnTile(this.cityMap.start.x, this.cityMap.start.y, 1.1);
+        this._seedStartingCity();
+        this._refreshAll();
+        eventBus.emit('ui:toast', { text: 'New city generated', kind: 'good' });
+    }
+
+    zoomBy(factor) {
+        this.camera.setZoom(Math.min(ZOOM_MAX, this.camera.targetZoom * factor));
     }
 }

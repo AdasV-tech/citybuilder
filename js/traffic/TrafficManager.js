@@ -1,15 +1,13 @@
 // js/traffic/TrafficManager.js
-// Spawns cars that commute between residential buildings and job buildings
-// (commercial/industrial) during morning/evening windows, and steps their
-// movement each frame with simple "don't overlap the car ahead" behavior.
+// Commuter traffic. Cars spawn during the morning and evening rush windows and
+// drive between homes and workplaces; freight trucks run between industry and
+// commerce all day. Where cars pile up, congestion rises on that tile, which
+// feeds back into pathfinding costs, land value and happiness.
 
 import {
-    MAX_CARS, CAR_MIN_GAP,
-    COMMUTE_MORNING_START, COMMUTE_MORNING_END,
-    COMMUTE_EVENING_START, COMMUTE_EVENING_END
+    MAX_CARS, CAR_MIN_GAP, ROAD_CAPACITY, COMMUTE_WINDOWS
 } from '../utils/Constants.js';
-import { Car } from './Car.js';
-import { tileKey } from '../utils/MathUtils.js';
+import { Car, CAR_KIND } from './Car.js';
 
 export class TrafficManager {
     constructor(roadNetwork, pathfinder, zoneManager, timeManager) {
@@ -19,106 +17,142 @@ export class TrafficManager {
         this.time = timeManager;
         this.cars = [];
         this._spawnCooldown = 0;
+        this._tileCounts = new Map();
+        this._congestionTimer = 0;
+    }
+
+    get carCount() { return this.cars.length; }
+
+    /** Average congestion across the road network, 0..1 — shown in the HUD. */
+    get averageCongestion() {
+        let sum = 0, count = 0;
+        for (const tile of this.roads.map.tiles) {
+            if (!tile.road) continue;
+            sum += tile.road.congestion;
+            count++;
+        }
+        return count === 0 ? 0 : sum / count;
+    }
+
+    reset() {
+        this.cars = [];
+        this._spawnCooldown = 0;
+        this._tileCounts.clear();
     }
 
     update(dtMs) {
         this._trySpawn(dtMs);
-        this._advanceCars(dtMs / 1000);
-        this.cars = this.cars.filter(c => !c.finished);
+        this._advance(dtMs / 1000);
+
+        if (this.cars.length > 0 || this._tileCounts.size > 0) {
+            this._congestionTimer += dtMs;
+            if (this._congestionTimer >= 400) {
+                this._congestionTimer = 0;
+                this.roads.applyCongestion(this._tileCounts, type => ROAD_CAPACITY[type] ?? 3);
+            }
+        }
     }
 
-    _inWindow(frac, start, end) { return frac >= start && frac <= end; }
+    // --- spawning -------------------------------------------------------------
+
+    _activeWindow() {
+        const f = this.time.dayFraction;
+        for (const window of COMMUTE_WINDOWS) {
+            if (f >= window.start && f <= window.end) return window;
+        }
+        return null;
+    }
 
     _trySpawn(dtMs) {
         this._spawnCooldown -= dtMs;
         if (this._spawnCooldown > 0) return;
-        this._spawnCooldown = 220; // ms between spawn attempts
-
+        this._spawnCooldown = 140;
         if (this.cars.length >= MAX_CARS) return;
 
-        const dayFrac = this.time.dayFraction;
-        const morning = this._inWindow(dayFrac, COMMUTE_MORNING_START, COMMUTE_MORNING_END);
-        const evening = this._inWindow(dayFrac, COMMUTE_EVENING_START, COMMUTE_EVENING_END);
-        if (!morning && !evening) return;
+        const homes = this.zones.residentialBuildings;
+        const workplaces = this.zones.jobBuildings;
+        if (homes.length === 0 || workplaces.length === 0) return;
 
-        const residential = this.zones.residentialBuildings.filter(b => b.population >= 1);
-        const jobs = [...this.zones.commercialBuildings, ...this.zones.industrialBuildings].filter(b => b.workers >= 1);
-        if (residential.length === 0 || jobs.length === 0) return;
+        const window = this._activeWindow();
+        // Outside rush hour a trickle of freight keeps the city looking alive.
+        const isFreight = !window || Math.random() < 0.25;
 
-        const from = morning
-            ? residential[Math.floor(Math.random() * residential.length)]
-            : jobs[Math.floor(Math.random() * jobs.length)];
-        const to = morning
-            ? jobs[Math.floor(Math.random() * jobs.length)]
-            : residential[Math.floor(Math.random() * residential.length)];
+        let from, to, kind;
+        if (isFreight) {
+            const industry = workplaces.filter(b => b.isIndustrial);
+            const shops = workplaces.filter(b => b.isCommercial);
+            if (industry.length === 0 || shops.length === 0) return;
+            from = pick(industry); to = pick(shops); kind = CAR_KIND.TRUCK;
+        } else if (window.direction === 'toWork') {
+            from = pick(homes); to = pick(workplaces); kind = CAR_KIND.COMMUTER;
+        } else {
+            from = pick(workplaces); to = pick(homes); kind = CAR_KIND.COMMUTER;
+        }
+        if (!from || !to || from === to) return;
+        if (from.occupants < 0.5 || to.occupants < 0.5) return;
 
-        const startRoad = this.roads.findNearestRoad(from.x, from.y);
-        const endRoad = this.roads.findNearestRoad(to.x, to.y);
-        if (!startRoad || !endRoad) return;
+        const start = this.roads.findNearestRoad(from.x, from.y, 3);
+        const end = this.roads.findNearestRoad(to.x, to.y, 3);
+        if (!start || !end) return;
 
-        const path = this.pathfinder.findPath(startRoad.x, startRoad.y, endRoad.x, endRoad.y);
+        const path = this.pathfinder.findPath(start.x, start.y, end.x, end.y);
         if (!path || path.length < 2) return;
 
-        this.cars.push(new Car(path, Math.random()));
+        this.cars.push(new Car(path, kind));
     }
 
-    _evaluateServiceAlerts(stats = {}) {
-        const alerts = [];
-        const residentialPopulation = stats.residentialPopulation ?? this.zones.totalPopulation;
-        const jobs = stats.jobs ?? this.zones.totalJobs;
-        const jobCapacity = this.zones.buildings.reduce((sum, building) => {
-            if (building.isResidential) return sum;
-            return sum + Math.max(1, building.capacity || 0);
-        }, 0);
-        const shouldAlert = jobs > residentialPopulation || jobCapacity > residentialPopulation;
-        if (!shouldAlert) return alerts;
+    // --- movement ---------------------------------------------------------------
 
-        for (const building of this.zones.industrialBuildings) {
-            if (building.abandoned) continue;
-            const workerTarget = Math.max(1, Math.floor(building.capacity * 0.45));
-            if (building.workers < workerTarget) {
-                alerts.push({
-                    type: 'workers-needed',
-                    building,
-                    message: 'Factories need more workers'
-                });
-            }
-        }
-        return alerts;
-    }
-
-    _advanceCars(dtSeconds) {
-        // Group cars by the tile they currently occupy so we can enforce following distance.
-        const occupancy = new Map(); // tileKey -> [{car, fractionInTile}]
-        for (const car of this.cars) {
-            const idx = car.currentTileIndex;
-            const frac = car.progress - idx;
-            const tile = car.path[idx];
-            const key = tileKey(tile.x, tile.y) + `#${idx}`;
-            if (!occupancy.has(key)) occupancy.set(key, []);
-            occupancy.get(key).push({ car, frac });
+    _advance(dtSeconds) {
+        if (this.cars.length === 0) {
+            if (this._tileCounts.size > 0) this._tileCounts.clear();
+            return;
         }
 
+        // Cars ahead on the same path segment cap how far a car may advance.
+        const leaders = new Map(); // "tileKey#index" -> smallest fraction into that tile
+        const counts = this._tileCounts;
+        counts.clear();
+
         for (const car of this.cars) {
-            const nextIdx = car.currentTileIndex + 1;
+            const index = car.tileIndex;
+            const tile = car.path[index];
+            const key = `${tile.x},${tile.y}`;
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+            const slot = `${key}#${index}`;
+            const fraction = car.progress - index;
+            const existing = leaders.get(slot);
+            if (existing === undefined || fraction < existing) leaders.set(slot, fraction);
+        }
+
+        const map = this.roads.map;
+        let finished = 0;
+
+        for (const car of this.cars) {
+            const index = car.tileIndex;
+            const tile = map.getTile(car.path[index].x, car.path[index].y);
             let maxProgress = car.totalLength;
-            if (nextIdx <= car.totalLength) {
-                const tile = car.path[nextIdx];
-                const key = tileKey(tile.x, tile.y) + `#${nextIdx}`;
-                const occupants = occupancy.get(key);
-                if (occupants) {
-                    let minFrac = Infinity;
-                    for (const o of occupants) {
-                        if (o.car !== car) minFrac = Math.min(minFrac, o.frac);
-                    }
-                    if (minFrac !== Infinity && minFrac < CAR_MIN_GAP) {
-                        maxProgress = Math.min(maxProgress, nextIdx + Math.max(0, minFrac - CAR_MIN_GAP * 0.6));
-                    }
+
+            const nextIndex = index + 1;
+            if (nextIndex <= car.totalLength) {
+                const nextTile = car.path[nextIndex];
+                const ahead = leaders.get(`${nextTile.x},${nextTile.y}#${nextIndex}`);
+                if (ahead !== undefined && ahead < CAR_MIN_GAP) {
+                    maxProgress = Math.min(maxProgress, nextIndex + ahead - CAR_MIN_GAP);
                 }
             }
-            car.update(dtSeconds, maxProgress);
-        }
-    }
 
-    get carCount() { return this.cars.length; }
+            car.update(dtSeconds, maxProgress, tile?.road?.type ?? 'street', tile?.road?.congestion ?? 0);
+
+            // A car whose road was bulldozed under it just vanishes.
+            if (!tile?.road) car.finished = true;
+            if (car.finished) finished++;
+        }
+
+        if (finished > 0) this.cars = this.cars.filter(car => !car.finished);
+    }
+}
+
+function pick(list) {
+    return list.length === 0 ? null : list[(Math.random() * list.length) | 0];
 }

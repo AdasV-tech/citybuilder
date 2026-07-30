@@ -1,46 +1,55 @@
 // js/simulation/Tile.js
-// A single grid cell. Holds terrain (permanent-ish) plus whatever the player
-// has built on top of it (road / zone / building). Kept as a plain-ish class
-// so it stays cheap to create thousands of.
+// One grid cell. Terrain is generated once; everything else is player-built.
+// Kept as a small monomorphic class so V8 can allocate ~10k of them cheaply.
 
-export const Terrain = Object.freeze({
-    GRASS: 'grass',
-    WATER: 'water',
-    TREE: 'tree'
-});
+import { TERRAIN } from '../utils/Constants.js';
 
 export class Tile {
-    constructor(x, y, terrain = Terrain.GRASS) {
+    constructor(x, y, terrain = TERRAIN.GRASS, variant = 0) {
         this.x = x;
         this.y = y;
         this.terrain = terrain;
+        this.variant = variant;   // deterministic 0..255 detail seed for rendering
 
-        this.road = null;      // { connections: bitmask N|E|S|W } when a road occupies this tile
-        this.zoneType = null;  // 'residential' | 'commercial' | 'industrial' | null
-        this.building = null;  // Building instance | null
-        this.waterPipe = false; // manually placed water pipe
-        this.powerLine = false; // manually placed power line
-        this.growthTimer = 0;  // ms accumulated toward spawning a building on a zoned lot
+        this.road = null;         // { type, connections, cars, congestion }
+        this.zone = null;         // 'residential' | 'commercial' | 'industrial'
+        this.building = null;     // Building on a zoned lot
+        this.structure = null;    // ServiceBuilding occupying this tile
+        this.structureOrigin = false;
+
+        this.pipe = false;        // player-laid water pipe
+        this.wire = false;        // player-laid power line
+
+        this.growth = 0;          // ms accumulated toward spawning a building
+        this.powered = false;     // refreshed by UtilityGrid
+        this.watered = false;
     }
 
-    get isWater() { return this.terrain === Terrain.WATER; }
-    get isTree() { return this.terrain === Terrain.TREE; }
+    get isWater() { return this.terrain === TERRAIN.WATER; }
+    get isForest() { return this.terrain === TERRAIN.FOREST; }
+    get isRock() { return this.terrain === TERRAIN.ROCK; }
 
-    /** Buildable = not water, and not already a road/building. Trees are clearable. */
-    get isBuildable() {
-        return this.terrain !== Terrain.WATER && !this.road && !this.building && !this.zoneType;
+    /** Nothing built here and the ground can be built on. */
+    get isFree() {
+        return !this.isWater && !this.isRock && !this.road && !this.building &&
+               !this.structure && !this.zone;
     }
 
-    get isEmptyZonable() {
-        return this.terrain !== Terrain.WATER && this.terrain !== Terrain.TREE && !this.road && !this.building;
+    /** Can a zone be painted here? Trees are cleared automatically. */
+    get isZonable() {
+        return !this.isWater && !this.isRock && !this.road && !this.building && !this.structure;
     }
 
-    /** Whether the bulldozer tool has anything to do here (road/zone/building/tree). */
-    get isBulldozable() {
-        return !!(this.road || this.zoneType || this.building || this.terrain === Terrain.TREE || this.waterPipe || this.powerLine);
+    get hasAnything() {
+        return !!(this.road || this.zone || this.building || this.structure ||
+                  this.pipe || this.wire || this.isForest);
     }
 
-    clearNature() {
-        if (this.terrain === Terrain.TREE) this.terrain = Terrain.GRASS;
+    /** Roads carry utilities underneath, so they conduct as well as pipes/wires. */
+    get conductsPower() { return !!this.road || this.wire || !!this.structure || !!this.building; }
+    get conductsWater() { return !!this.road || this.pipe || !!this.structure || !!this.building; }
+
+    clearTrees() {
+        if (this.terrain === TERRAIN.FOREST) this.terrain = TERRAIN.GRASS;
     }
 }

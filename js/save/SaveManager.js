@@ -1,114 +1,134 @@
 // js/save/SaveManager.js
-// Serializes/restores the whole game state to Local Storage. Storing tile
-// terrain would be large but static (deterministic from the seed), so we
-// only persist the seed plus everything the player actually changed:
-// roads, zones/buildings, money, and time.
+// Persists the city to Local Storage (plus manual JSON export/import).
+// Terrain isn't stored — it's a pure function of the seed — so a save is only
+// the things the player actually built, which keeps it small and fast.
 
-const SAVE_KEY = 'citybuilder_save_v1';
-const AUTOSAVE_KEY = 'citybuilder_autosave_v1';
+const SAVE_KEY = 'citybuilder_save_v2';
+const AUTOSAVE_KEY = 'citybuilder_autosave_v2';
+const SAVE_VERSION = 2;
+
+function storage() {
+    try {
+        return typeof localStorage !== 'undefined' ? localStorage : null;
+    } catch {
+        return null;   // private-mode browsers throw on access
+    }
+}
 
 export class SaveManager {
     serializeState(game) {
-        const roadTiles = [];
-        game.cityMap.forEachTile(tile => {
-            if (tile.road) roadTiles.push([tile.x, tile.y]);
-        });
+        const pipes = [];
+        const wires = [];
+        for (const tile of game.cityMap.tiles) {
+            if (tile.pipe) pipes.push([tile.x, tile.y]);
+            if (tile.wire) wires.push([tile.x, tile.y]);
+        }
 
-        const zoneTiles = [];
-        const waterPipes = [];
-        const powerLines = [];
-        game.cityMap.forEachTile(tile => {
-            if (tile.zoneType && !tile.building) zoneTiles.push([tile.x, tile.y, tile.zoneType, tile.growthTimer]);
-            if (tile.waterPipe) waterPipes.push([tile.x, tile.y]);
-            if (tile.powerLine) powerLines.push([tile.x, tile.y]);
-        });
+        const zoneData = game.zones.serialize();
 
         return {
-            version: 1,
+            version: SAVE_VERSION,
             savedAt: Date.now(),
+            cityName: game.cityName,
             seed: game.cityMap.seed,
-            mapWidth: game.cityMap.width,
-            mapHeight: game.cityMap.height,
-            roads: roadTiles,
-            zones: zoneTiles,
-            waterPipes,
-            powerLines,
-            buildings: game.zoneManager.serialize(),
+            width: game.cityMap.width,
+            height: game.cityMap.height,
+            roads: game.roads.serialize(),
+            zones: zoneData.zones,
+            buildings: zoneData.buildings,
+            pipes,
+            wires,
+            services: game.services.serialize(),
             economy: game.economy.serialize(),
-            time: game.time.serialize()
+            time: game.time.serialize(),
+            demand: game.demand.serialize(),
+            milestones: game.milestones.serialize(),
+            camera: { x: game.camera.targetX, y: game.camera.targetY, zoom: game.camera.targetZoom }
         };
     }
 
     save(game) {
         const data = this.serializeState(game);
-        localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+        this._write(SAVE_KEY, data);
         return data;
     }
 
     autosave(game) {
         const data = this.serializeState(game);
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
+        this._write(AUTOSAVE_KEY, data);
         return data;
     }
 
-    hasSave() { return !!localStorage.getItem(SAVE_KEY); }
-    hasAutosave() { return !!localStorage.getItem(AUTOSAVE_KEY); }
+    _write(key, data) {
+        const store = storage();
+        if (!store) return false;
+        try {
+            store.setItem(key, JSON.stringify(data));
+            return true;
+        } catch {
+            return false;   // quota exceeded
+        }
+    }
+
+    hasSave() { return !!storage()?.getItem(SAVE_KEY); }
+    hasAutosave() { return !!storage()?.getItem(AUTOSAVE_KEY); }
 
     clearAllSaves() {
-        const hadSave = this.hasSave();
-        const hadAutosave = this.hasAutosave();
-        if (!hadSave && !hadAutosave) return false;
-        localStorage.removeItem(SAVE_KEY);
-        localStorage.removeItem(AUTOSAVE_KEY);
-        return true;
+        const store = storage();
+        if (!store) return false;
+        const had = this.hasSave() || this.hasAutosave();
+        store.removeItem(SAVE_KEY);
+        store.removeItem(AUTOSAVE_KEY);
+        return had;
     }
 
     loadRaw(useAutosave = false) {
-        const raw = localStorage.getItem(useAutosave ? AUTOSAVE_KEY : SAVE_KEY);
+        const raw = storage()?.getItem(useAutosave ? AUTOSAVE_KEY : SAVE_KEY);
         if (!raw) return null;
-        try { return JSON.parse(raw); } catch { return null; }
+        try {
+            const data = JSON.parse(raw);
+            return this._isValid(data) ? data : null;
+        } catch {
+            return null;
+        }
     }
 
-    /** Create a downloadable JSON string for the current save. */
+    _isValid(data) {
+        return !!data && typeof data === 'object' && Array.isArray(data.roads);
+    }
+
     exportSave(game) {
         return JSON.stringify(this.serializeState(game), null, 2);
     }
 
-    /** Applies saved data onto an already-constructed game instance. */
+    /** Apply saved data to an already-reset game instance. */
     applyTo(game, data) {
-        if (!data) return false;
+        if (!this._isValid(data)) return false;
 
-        // Roads first (buildings/zones depend on adjacency, but restoring
-        // order doesn't matter here since we set tiles directly).
-        for (const [x, y] of data.roads) {
-            game.roadNetwork.placeRoad(x, y);
-        }
+        game.cityName = data.cityName ?? game.cityName;
+        game.roads.restore(data.roads);
 
-        for (const [x, y, zoneType, growthTimer] of data.zones) {
+        for (const [x, y] of data.pipes || []) {
             const tile = game.cityMap.getTile(x, y);
-            if (!tile) continue;
-            tile.clearNature();
-            tile.zoneType = zoneType;
-            tile.growthTimer = growthTimer || 0;
+            if (tile) { tile.clearTrees(); tile.pipe = true; }
+        }
+        for (const [x, y] of data.wires || []) {
+            const tile = game.cityMap.getTile(x, y);
+            if (tile) { tile.clearTrees(); tile.wire = true; }
         }
 
-        for (const [x, y] of data.waterPipes || []) {
-            const tile = game.cityMap.getTile(x, y);
-            if (tile) tile.waterPipe = true;
-        }
-        for (const [x, y] of data.powerLines || []) {
-            const tile = game.cityMap.getTile(x, y);
-            if (tile) tile.powerLine = true;
-        }
-
-        game.zoneManager.restore(data.buildings || []);
+        game.services.restore(data.services || []);
+        game.zones.restore({ zones: data.zones || [], buildings: data.buildings || [] });
         game.economy.restore(data.economy || {});
         game.time.restore(data.time || {});
+        game.demand.restore(data.demand || {});
+        game.milestones.restore(data.milestones || {});
 
-        game.trafficManager.cars = [];
-        game.trafficManager._spawnCooldown = 0;
-        game.infrastructure.rebuildNetworks();
-
+        if (data.camera) {
+            game.camera.targetX = game.camera.x = data.camera.x;
+            game.camera.targetY = game.camera.y = data.camera.y;
+            game.camera.targetZoom = game.camera.zoom = data.camera.zoom;
+        }
         return true;
     }
 }

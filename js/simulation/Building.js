@@ -1,144 +1,180 @@
 // js/simulation/Building.js
-// Represents a single grown building on a zoned lot. Tracks the stats the
-// brief asks for (population, workers, happiness, tax contribution) and can
-// upgrade once conditions are good, per the "first playable version" scope.
+// A grown building on a zoned lot. It owns its own little feedback loop:
+// local conditions (utilities, services, pollution, traffic, taxes) decide how
+// happy it is, happiness plus land value decide whether it levels up, fills up,
+// empties out, or is eventually abandoned.
 
-import { BUILDING_CAPACITY, MAX_BUILDING_LEVEL, TAX_RATE_RESIDENTIAL, TAX_RATE_COMMERCIAL, TAX_RATE_INDUSTRIAL, ABANDONMENT_WINDOW_MS } from '../utils/Constants.js';
+import {
+    BUILDING_CAPACITY, MAX_BUILDING_LEVEL, LEVEL_LAND_VALUE,
+    TAX_BASE, TAX_RATE_DEFAULT, TAX_RATE_COMFORT, ABANDON_WINDOW_MS,
+    LEVEL_UP_INTERVAL_MS, POWER_PER_OCCUPANT, WATER_PER_OCCUPANT
+} from '../utils/Constants.js';
+import { clamp01, lerp } from '../utils/MathUtils.js';
 
 let nextBuildingId = 1;
 
+export function resetBuildingIds(value = 1) { nextBuildingId = value; }
+
 export class Building {
-    constructor(x, y, zoneType) {
+    constructor(x, y, zone, variant = 0) {
         this.id = nextBuildingId++;
         this.x = x;
         this.y = y;
-        this.zoneType = zoneType; // 'residential' | 'commercial' | 'industrial'
+        this.zone = zone;              // 'residential' | 'commercial' | 'industrial'
         this.level = 1;
+        this.variant = variant;        // stable sprite pick
 
-        this.population = 0; // residents (residential only)
-        this.workers = 0;    // employees (commercial/industrial only)
-        this.jobCapacity = this._capacityForLevel();
-        this.happiness = 0.6; // 0..1
-        this.abandonmentTimer = 0;
-        this.alertedForWorkers = false;
-        this.workerAlertShown = false;
+        this.occupants = 0;            // residents or workers depending on zone
+        this.happiness = 0.6;
+        this.landValue = 0.3;
+        this.powered = false;
+        this.watered = false;
         this.abandoned = false;
-
-        this.timeSinceUpgradeCheck = 0;
+        this.abandonTimer = 0;
+        this.levelTimer = 0;
+        this.age = 0;
+        this.complaint = null;         // short reason string for the info panel
     }
 
-    _capacityForLevel() {
-        const table = BUILDING_CAPACITY[this.zoneType];
+    get isResidential() { return this.zone === 'residential'; }
+    get isCommercial() { return this.zone === 'commercial'; }
+    get isIndustrial() { return this.zone === 'industrial'; }
+
+    get capacity() {
+        const table = BUILDING_CAPACITY[this.zone];
         return table[Math.min(this.level - 1, table.length - 1)];
     }
 
-    get isResidential() { return this.zoneType === 'residential'; }
-    get isCommercial() { return this.zoneType === 'commercial'; }
-    get isIndustrial() { return this.zoneType === 'industrial'; }
+    get population() { return this.isResidential ? this.occupants : 0; }
+    get jobs() { return this.isResidential ? 0 : this.occupants; }
 
-    /** Occupancy count regardless of type (population for residential, workers otherwise). */
-    get occupancy() {
-        return this.isResidential ? this.population : this.workers;
+    get powerDemand() { return this.capacity * POWER_PER_OCCUPANT * (this.isIndustrial ? 1.5 : 1); }
+    get waterDemand() { return this.capacity * WATER_PER_OCCUPANT * (this.isIndustrial ? 1.3 : 1); }
+
+    /** Monthly tax contribution, scaled by the rate the player set. */
+    monthlyTax(taxRate = TAX_RATE_DEFAULT, educationLevel = 0) {
+        if (this.abandoned) return 0;
+        const base = TAX_BASE[this.zone] * this.occupants;
+        const rateScale = taxRate / TAX_RATE_DEFAULT;
+        const educated = 1 + educationLevel * 0.35;
+        const morale = 0.55 + this.happiness * 0.45;
+        return base * rateScale * educated * morale;
     }
 
-    get capacity() {
-        return this._capacityForLevel();
-    }
+    /**
+     * One simulation step.
+     * @param {number} dtMs simulated milliseconds
+     * @param {object} ctx  { demand, landValue, pollution, congestion, taxRate,
+     *                        powered, watered, services:{police,fire,health,education,leisure} }
+     * @returns {'ok'|'abandoned'} whether the lot survived this tick
+     */
+    update(dtMs, ctx) {
+        this.age += dtMs;
+        this.powered = ctx.powered;
+        this.watered = ctx.watered;
+        this.landValue = ctx.landValue;
 
-    /** Daily tax income this building contributes. */
-    get dailyTax() {
-        if (this.isResidential) return this.population * TAX_RATE_RESIDENTIAL;
-        if (this.isCommercial) return this.workers * TAX_RATE_COMMERCIAL;
-        return this.workers * TAX_RATE_INDUSTRIAL;
-    }
+        const attractiveness = this._evaluate(ctx);
 
-    /** Called each sim tick to slowly fill up occupancy toward capacity. */
-    updateOccupancy(dtMs, demandFactor = 1) {
-        const cap = this._capacityForLevel();
-        const target = Math.round(cap * Math.min(1, Math.max(0, demandFactor)));
-        const fillRatePerMs = 0.0006; // fraction of a person per ms, slow organic growth
-        if (this.isResidential) {
-            if (this.population < target) {
-                this.population = Math.min(target, this.population + fillRatePerMs * dtMs * cap);
-            } else if (this.population > target) {
-                this.population = Math.max(target, this.population - fillRatePerMs * dtMs * cap * 0.5);
-            }
-        } else {
-            if (this.workers < target) {
-                this.workers = Math.min(target, this.workers + fillRatePerMs * dtMs * cap);
-            } else if (this.workers > target) {
-                this.workers = Math.max(target, this.workers - fillRatePerMs * dtMs * cap * 0.5);
-            }
-        }
-    }
+        // Occupancy chases the attractive share of capacity.
+        const target = this.capacity * attractiveness;
+        const rate = 0.00055 * dtMs * this.capacity;
+        if (this.occupants < target) this.occupants = Math.min(target, this.occupants + rate);
+        else this.occupants = Math.max(target, this.occupants - rate * 0.7);
 
-    updateHappiness(cityHappinessFactors) {
-        // Simple blended happiness: base + occupancy ratio - light penalty for congestion.
-        const occRatio = this.capacity > 0 ? this.occupancy / this.capacity : 0;
-        let h = 0.5 + occRatio * 0.2 + (cityHappinessFactors.taxRateComfort ?? 0.1);
-        h -= (cityHappinessFactors.congestionPenalty ?? 0);
-        h -= Math.max(0, 0.18 - (cityHappinessFactors.serviceCoverage ?? 1) * 0.18);
-        this.happiness = Math.max(0, Math.min(1, h));
-    }
-
-    updateServiceState(dtMs, context = {}) {
-        if (this.abandoned) return false;
-        if (!this.isIndustrial) return false;
-
-        const workerTarget = Math.max(1, Math.floor(this.capacity * 0.45));
-        const shortage = (context.jobs ?? 0) > (context.residentialPopulation ?? 0);
-        const needsWorkers = shortage && this.workers < workerTarget;
-        if (needsWorkers) {
-            this.alertedForWorkers = true;
-            this.abandonmentTimer += dtMs;
-        } else {
-            this.alertedForWorkers = false;
-            this.abandonmentTimer = Math.max(0, this.abandonmentTimer - dtMs * 0.25);
-            this.workerAlertShown = false;
-        }
-
-        if (this.abandonmentTimer >= (context.abandonmentWindowMs ?? ABANDONMENT_WINDOW_MS)) {
+        // Misery accumulates; sustained misery abandons the lot.
+        const miserable = this.happiness < 0.28 || (!this.powered && !this.watered);
+        this.abandonTimer = miserable
+            ? this.abandonTimer + dtMs
+            : Math.max(0, this.abandonTimer - dtMs * 0.6);
+        if (this.abandonTimer >= ABANDON_WINDOW_MS) {
             this.abandoned = true;
-            this.workers = 0;
-            return true;
+            this.occupants = 0;
+            return 'abandoned';
         }
-        return false;
+
+        this._tryLevelChange(dtMs);
+        return 'ok';
     }
 
-    /** Attempts to upgrade if happiness is good and the building is near full. */
-    tryUpgrade() {
-        if (this.level >= MAX_BUILDING_LEVEL) return false;
-        const nearFull = this.occupancy >= this._capacityForLevel() * 0.9;
-        if (this.happiness >= 0.65 && nearFull) {
-            this.level += 1;
-            this.jobCapacity = this._capacityForLevel();
-            return true;
+    /** Happiness + the demand-limited share of capacity this lot can attract. */
+    _evaluate(ctx) {
+        const services = ctx.services || {};
+        const coverage = this.isResidential
+            ? (services.police * 0.22 + services.fire * 0.18 + services.health * 0.24 +
+               services.education * 0.18 + services.leisure * 0.18)
+            : (services.police * 0.34 + services.fire * 0.34 + services.leisure * 0.32);
+
+        const utilities = (this.powered ? 0.5 : 0) + (this.watered ? 0.5 : 0);
+        const taxPain = Math.max(0, (ctx.taxRate ?? TAX_RATE_DEFAULT) - TAX_RATE_COMFORT) * 4.5;
+        const pollutionPain = this.isIndustrial ? ctx.pollution * 0.15 : ctx.pollution * 0.55;
+        const trafficPain = ctx.congestion * 0.3;
+
+        let h = 0.34
+            + coverage * 0.34
+            + utilities * 0.30
+            + ctx.landValue * 0.18
+            - taxPain
+            - pollutionPain
+            - trafficPain;
+
+        this.happiness = lerp(this.happiness, clamp01(h), 0.25);
+        this.complaint = this._diagnose(ctx, coverage);
+
+        // How full the lot gets is mostly about how good a place it is to live
+        // or trade in; demand only nudges it. (Making occupancy proportional to
+        // demand instead stalls the whole city at a permanent half-empty
+        // equilibrium — demand's job is to decide whether *new* lots get built.)
+        const desirability = clamp01(0.42 + this.happiness * 0.72);
+        const demandNudge = 0.8 + clamp01(ctx.demand ?? 0.5) * 0.2;
+        return clamp01(desirability * demandNudge * utilities);
+    }
+
+    _diagnose(ctx, coverage) {
+        if (!this.powered && !this.watered) return 'No power or water';
+        if (!this.powered) return 'No electricity';
+        if (!this.watered) return 'No running water';
+        if (ctx.pollution > 0.55 && !this.isIndustrial) return 'Heavy pollution';
+        if (ctx.congestion > 0.7) return 'Gridlocked streets';
+        if (coverage < 0.25) return 'No city services';
+        if ((ctx.taxRate ?? 0) > TAX_RATE_COMFORT + 0.05) return 'Taxes are too high';
+        return null;
+    }
+
+    /** Level up when prosperous and full; drop a level when persistently poor. */
+    _tryLevelChange(dtMs) {
+        this.levelTimer += dtMs;
+        if (this.levelTimer < LEVEL_UP_INTERVAL_MS) return;
+        this.levelTimer = 0;
+
+        const nearFull = this.occupants >= this.capacity * 0.78;
+        const canGrow = this.level < MAX_BUILDING_LEVEL &&
+            this.landValue >= LEVEL_LAND_VALUE[this.level] &&
+            this.happiness >= 0.55 && nearFull;
+
+        if (canGrow) { this.level++; return; }
+        if (this.level > 1 && this.happiness < 0.35 && this.occupants < this.capacity * 0.3) {
+            this.level--;
         }
-        return false;
     }
 
     toJSON() {
         return {
-            id: this.id, x: this.x, y: this.y, zoneType: this.zoneType, level: this.level,
-            population: this.population, workers: this.workers, happiness: this.happiness,
-            abandonmentTimer: this.abandonmentTimer, alertedForWorkers: this.alertedForWorkers,
-            workerAlertShown: this.workerAlertShown, abandoned: this.abandoned
+            i: this.id, x: this.x, y: this.y, z: this.zone, l: this.level, v: this.variant,
+            o: Math.round(this.occupants * 100) / 100,
+            h: Math.round(this.happiness * 1000) / 1000,
+            a: this.abandoned ? 1 : 0
         };
     }
 
     static fromJSON(data) {
-        const b = new Building(data.x, data.y, data.zoneType);
-        b.id = data.id;
-        b.level = data.level;
-        b.population = data.population;
-        b.workers = data.workers;
-        b.happiness = data.happiness;
-        b.abandonmentTimer = data.abandonmentTimer ?? 0;
-        b.alertedForWorkers = data.alertedForWorkers ?? false;
-        b.workerAlertShown = data.workerAlertShown ?? false;
-        b.abandoned = data.abandoned ?? false;
-        b.jobCapacity = b._capacityForLevel();
-        if (data.id >= nextBuildingId) nextBuildingId = data.id + 1;
+        const b = new Building(data.x, data.y, data.z, data.v ?? 0);
+        b.id = data.i ?? b.id;
+        b.level = data.l ?? 1;
+        b.occupants = data.o ?? 0;
+        b.happiness = data.h ?? 0.6;
+        b.abandoned = !!data.a;
+        if (b.id >= nextBuildingId) nextBuildingId = b.id + 1;
         return b;
     }
 }
