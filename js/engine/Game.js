@@ -76,6 +76,18 @@ export class Game {
         const displayHeight = this.canvas.clientHeight;
         this.canvas.width = Math.round(displayWidth * dpr);
         this.canvas.height = Math.round(displayHeight * dpr);
+        // Ensure the canvas is displayed at the correct CSS size while the
+        // drawing surface is scaled for HiDPI. Set an appropriate transform
+        // on the context so rendering code can continue using logical pixels.
+        try {
+            this.canvas.style.width = displayWidth + 'px';
+            this.canvas.style.height = displayHeight + 'px';
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        } catch (e) {
+            // Some older contexts may not support setTransform; fall back to scale.
+            this.ctx.scale(dpr, dpr);
+        }
+        this.renderer?.resize?.(displayWidth, displayHeight, dpr);
     }
 
     // --- tool actions (called by ToolController) -----------------------------
@@ -89,6 +101,8 @@ export class Game {
         for (let x = 8; x < this.cityMap.width - 8; x++) {
             this.roadNetwork.placeRoad(x, centerY);
         }
+        this.pathfinder.clearCache?.();
+        this.renderer?.invalidateStaticCache?.();
     }
 
     placeRoads(tiles) {
@@ -109,6 +123,8 @@ export class Game {
         if (placedCount > 0) {
             this.economy.spend(this.economy.roadCost(placedCount));
             this.infrastructure.rebuildNetworks();
+            this.pathfinder.clearCache?.();
+            this.renderer?.invalidateStaticCache?.();
         }
     }
 
@@ -128,6 +144,32 @@ export class Game {
             if (this.zoneManager.zoneTile(t.x, t.y, zoneType)) count++;
         }
         if (count > 0) this.economy.spend(this.economy.zoneCost(count));
+        this.renderer?.invalidateStaticCache?.();
+    }
+
+    placeUtilities(tiles, utilityType) {
+        const placeable = tiles.filter(t => {
+            const tile = this.cityMap.getTile(t.x, t.y);
+            if (!tile || tile.isWater || tile.road || tile.building) return false;
+            if (utilityType === 'waterPipe') return !tile.waterPipe;
+            if (utilityType === 'powerLine') return !tile.powerLine;
+            return false;
+        });
+        if (placeable.length === 0) return;
+        const cost = this.economy.utilityCost(placeable.length);
+        if (!this.economy.canAfford(cost)) {
+            eventBus.emit('ui:toast', `Not enough money (need §${cost})`);
+            return;
+        }
+        for (const t of placeable) {
+            const tile = this.cityMap.getTile(t.x, t.y);
+            if (!tile) continue;
+            if (utilityType === 'waterPipe') tile.waterPipe = true;
+            if (utilityType === 'powerLine') tile.powerLine = true;
+        }
+        this.economy.spend(cost);
+        this.infrastructure.rebuildNetworks();
+        this.renderer?.invalidateStaticCache?.();
     }
 
     bulldoze(tiles) {
@@ -136,9 +178,13 @@ export class Game {
             if (!tile) continue;
             if (tile.road) this.roadNetwork.removeRoad(t.x, t.y);
             if (tile.zoneType || tile.building) this.zoneManager.unzoneTile(t.x, t.y);
+            tile.waterPipe = false;
+            tile.powerLine = false;
             tile.clearNature();
         }
         this.infrastructure.rebuildNetworks();
+        this.pathfinder.clearCache?.();
+        this.renderer?.invalidateStaticCache?.();
     }
 
     // --- save / load -----------------------------------------------------------
@@ -180,6 +226,8 @@ export class Game {
             this.saveManager.applyTo(this, data);
             this.infrastructure.rebuildNetworks();
             this._refreshLoadedState();
+            this.pathfinder.clearCache?.();
+            this.renderer?.invalidateStaticCache?.();
         }
     }
 
@@ -187,6 +235,7 @@ export class Game {
         this.infrastructure?.rebuildNetworks();
         this.ui?.update();
         this._render();
+        this.renderer?.invalidateStaticCache?.();
     }
 
     _resetMutableState() {
@@ -195,6 +244,8 @@ export class Game {
             tile.road = null;
             tile.zoneType = null;
             tile.building = null;
+            tile.waterPipe = false;
+            tile.powerLine = false;
             tile.growthTimer = 0;
         });
         this.roadNetwork.roadTiles.clear();

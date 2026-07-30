@@ -18,6 +18,8 @@ export class Tile {
         this.road = null;      // { connections: bitmask N|E|S|W } when a road occupies this tile
         this.zoneType = null;  // 'residential' | 'commercial' | 'industrial' | null
         this.building = null;  // Building instance | null
+        this.waterPipe = false; // manually placed water pipe
+        this.powerLine = false; // manually placed power line
         this.growthTimer = 0;  // ms accumulated toward spawning a building on a zoned lot
     }
 
@@ -35,7 +37,7 @@ export class Tile {
 
     /** Whether the bulldozer tool has anything to do here (road/zone/building/tree). */
     get isBulldozable() {
-        return !!(this.road || this.zoneType || this.building || this.terrain === Terrain.TREE);
+        return !!(this.road || this.zoneType || this.building || this.terrain === Terrain.TREE || this.waterPipe || this.powerLine);
     }
 
     clearNature() {

@@ -26,6 +26,7 @@ export const STARTING_MONEY = 20000;
 
 export const COST_ROAD_TILE = 20;
 export const COST_ZONE_TILE = 10;
+export const COST_UTILITY_TILE = 12;
 export const COST_BULLDOZE = 0;
 
 export const TAX_RATE_RESIDENTIAL = 1.4; // money per citizen per day

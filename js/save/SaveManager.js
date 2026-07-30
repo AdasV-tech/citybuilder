@@ -15,8 +15,12 @@ export class SaveManager {
         });
 
         const zoneTiles = [];
+        const waterPipes = [];
+        const powerLines = [];
         game.cityMap.forEachTile(tile => {
             if (tile.zoneType && !tile.building) zoneTiles.push([tile.x, tile.y, tile.zoneType, tile.growthTimer]);
+            if (tile.waterPipe) waterPipes.push([tile.x, tile.y]);
+            if (tile.powerLine) powerLines.push([tile.x, tile.y]);
         });
 
         return {
@@ -27,6 +31,8 @@ export class SaveManager {
             mapHeight: game.cityMap.height,
             roads: roadTiles,
             zones: zoneTiles,
+            waterPipes,
+            powerLines,
             buildings: game.zoneManager.serialize(),
             economy: game.economy.serialize(),
             time: game.time.serialize()
@@ -63,6 +69,11 @@ export class SaveManager {
         try { return JSON.parse(raw); } catch { return null; }
     }
 
+    /** Create a downloadable JSON string for the current save. */
+    exportSave(game) {
+        return JSON.stringify(this.serializeState(game), null, 2);
+    }
+
     /** Applies saved data onto an already-constructed game instance. */
     applyTo(game, data) {
         if (!data) return false;
@@ -79,6 +90,15 @@ export class SaveManager {
             tile.clearNature();
             tile.zoneType = zoneType;
             tile.growthTimer = growthTimer || 0;
+        }
+
+        for (const [x, y] of data.waterPipes || []) {
+            const tile = game.cityMap.getTile(x, y);
+            if (tile) tile.waterPipe = true;
+        }
+        for (const [x, y] of data.powerLines || []) {
+            const tile = game.cityMap.getTile(x, y);
+            if (tile) tile.powerLine = true;
         }
 
         game.zoneManager.restore(data.buildings || []);

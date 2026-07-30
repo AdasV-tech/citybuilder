@@ -7,6 +7,7 @@ import { ToolController } from './ToolController.js';
 import { Toolbar } from './Toolbar.js';
 import { InfoBar } from './InfoBar.js';
 import { eventBus } from '../utils/EventBus.js';
+import { AudioManager } from '../audio/AudioManager.js';
 
 export class UIManager {
     constructor(game) {
@@ -17,7 +18,8 @@ export class UIManager {
         this.infoBarEl = document.getElementById('info-bar');
         this.toastEl = document.getElementById('toast');
 
-        this.toolbar = new Toolbar(this.toolbarEl, this.toolController, game);
+        this.audio = new AudioManager();
+        this.toolbar = new Toolbar(this.toolbarEl, this.toolController, game, this.audio);
         this.infoBar = new InfoBar(this.infoBarEl, game);
 
         this._bindEvents();

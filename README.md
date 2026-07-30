@@ -200,6 +200,28 @@ are required.
   than deeply nested structures, keeping per-frame iteration cheap even with
   hundreds of buildings.
 
+## Improvements in this workspace
+
+This branch includes several quality-of-life and performance improvements
+implemented to make the game smoother and more polished:
+
+- **Static layer caching:** the renderer now caches the map + road layer to an
+  offscreen canvas and blits it each frame, greatly reducing draw work
+  when the viewport doesn't change ([`js/rendering/Renderer.js`](js/rendering/Renderer.js)).
+- **HiDPI canvas transforms:** the game now sets an appropriate devicePixelRatio
+  transform so the canvas renders crisply on Retina/HiDPI displays
+  ([`js/engine/Game.js`](js/engine/Game.js)).
+- **Pathfinder caching:** repeated A* lookups are cached and invalidated
+  when the road network changes, improving traffic path reuse
+  ([`js/traffic/Pathfinder.js`](js/traffic/Pathfinder.js)).
+- **Save export/import:** toolbar buttons to export a JSON save and import
+  one from disk were added to make sharing/debugging saves easier
+  ([`index.html`](index.html), [`js/ui/Toolbar.js`](js/ui/Toolbar.js)).
+- **Small UI sounds:** a lightweight WebAudio-based `AudioManager` plays
+  subtle sounds for save/load and clicks ([`js/audio/AudioManager.js`](js/audio/AudioManager.js)).
+- **CI workflow:** added a GitHub Actions workflow to run `npm test` on push
+  and PRs to keep test coverage enforced (see `.github/workflows/nodejs.yml`).
+
 ## License
 
 MIT — see [LICENSE](./LICENSE). This is an original codebase created for

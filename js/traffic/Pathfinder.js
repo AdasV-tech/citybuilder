@@ -8,10 +8,14 @@ import { manhattan, tileKey } from '../utils/MathUtils.js';
 export class Pathfinder {
     constructor(roadNetwork) {
         this.roads = roadNetwork;
+        this._cache = new Map();
     }
 
     /** Returns an array of {x,y} tile coordinates from start to goal (inclusive), or null. */
     findPath(startX, startY, goalX, goalY) {
+        const cacheKey = startX + ',' + startY + '|' + goalX + ',' + goalY;
+        const cached = this._cache.get(cacheKey);
+        if (cached) return cached;
         if (!this.roads.hasRoad(startX, startY) || !this.roads.hasRoad(goalX, goalY)) {
             return null;
         }
@@ -40,7 +44,9 @@ export class Pathfinder {
             openSet.delete(currentKey);
 
             if (currentKey === goalKey) {
-                return this._reconstructPath(cameFrom, currentKey, startKey);
+                const path = this._reconstructPath(cameFrom, currentKey, startKey);
+                this._cache.set(cacheKey, path);
+                return path;
             }
             closed.add(currentKey);
 
@@ -58,6 +64,10 @@ export class Pathfinder {
             }
         }
         return null; // no path found
+    }
+
+    clearCache() {
+        this._cache.clear();
     }
 
     _reconstructPath(cameFrom, currentKey, startKey) {

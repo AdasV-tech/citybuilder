@@ -14,6 +14,25 @@ export class Renderer {
         this.ctx = ctx;
         this.canvas = canvas;
         this.camera = camera;
+        // Offscreen canvas for static map/road drawing to avoid redrawing
+        // expensive terrain/road geometry every frame when nothing changed.
+        this._staticCanvas = document.createElement('canvas');
+        this._staticCtx = this._staticCanvas.getContext('2d');
+        this._staticValid = false;
+        this._lastSize = { w: 0, h: 0 };
+    }
+
+    invalidateStaticCache() {
+        this._staticValid = false;
+    }
+
+    resize(displayWidth, displayHeight, dpr = 1) {
+        const w = Math.round(displayWidth * dpr);
+        const h = Math.round(displayHeight * dpr);
+        this._staticCanvas.width = w;
+        this._staticCanvas.height = h;
+        this._lastSize = { w, h };
+        this._staticValid = false;
     }
 
     /** Returns the visible tile bounding box, with a small margin, for culling. */
@@ -34,6 +53,15 @@ export class Renderer {
         const ctx = this.ctx;
         const cam = this.camera;
 
+        // Ensure static cache is valid for current canvas size and viewport
+        const pixelW = this.canvas.width, pixelH = this.canvas.height;
+        if (this._lastSize.w !== pixelW || this._lastSize.h !== pixelH) {
+            this._staticCanvas.width = pixelW;
+            this._staticCanvas.height = pixelH;
+            this._staticValid = false;
+            this._lastSize = { w: pixelW, h: pixelH };
+        }
+
         ctx.save();
         ctx.fillStyle = '#213045';
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -43,10 +71,27 @@ export class Renderer {
         ctx.translate(-cam.x, -cam.y);
 
         const bounds = this.getVisibleTileBounds(cityMap);
+        // Draw cached static layer (map + roads) if valid, otherwise rebuild it.
+        if (!this._staticValid) {
+            const sctx = this._staticCtx;
+            sctx.save();
+            // same transforms as main context so draw functions can reuse tile coords
+            sctx.clearRect(0, 0, this._staticCanvas.width, this._staticCanvas.height);
+            sctx.translate(this.canvas.width / 2, this.canvas.height / 2);
+            sctx.scale(cam.zoom, cam.zoom);
+            sctx.translate(-cam.x, -cam.y);
+            drawMap(sctx, cityMap, bounds);
+            drawRoads(sctx, cityMap, bounds);
+            sctx.restore();
+            this._staticValid = true;
+        }
 
-        drawMap(ctx, cityMap, bounds);
+        // Blit the static cache into the main context
+        ctx.drawImage(this._staticCanvas, 0, 0);
+
+        // Dynamic layers still drawn live
         drawZones(ctx, cityMap, bounds);
-        drawRoads(ctx, cityMap, bounds);
+        drawRoads(ctx, cityMap, bounds); // small roads redraw kept for lane lines clarity
         this._drawInfrastructure(ctx, cityMap, infrastructure, bounds);
         drawBuildings(ctx, cityMap, bounds, infrastructure);
         drawCars(ctx, trafficManager);
@@ -58,29 +103,43 @@ export class Renderer {
 
     _drawInfrastructure(ctx, cityMap, infrastructure, bounds) {
         if (!infrastructure) return;
+        // Batch service overlay strokes to reduce Canvas state changes and
+        // avoid calling stroke() many times per tile.
+        const waterPath = new Path2D();
+        const powerPath = new Path2D();
+        let hasWaterSegment = false;
+        let hasPowerSegment = false;
+
         for (let y = bounds.minY; y <= bounds.maxY; y++) {
             for (let x = bounds.minX; x <= bounds.maxX; x++) {
                 const tile = cityMap.getTile(x, y);
-                if (!tile || !tile.road) continue;
-                if (tile.road.serviceMask & 1) {
-                    ctx.strokeStyle = 'rgba(93, 216, 255, 0.95)';
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    ctx.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
-                    ctx.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
-                    ctx.stroke();
+                if (!tile) continue;
+                const hasWater = tile.waterPipe || (tile.road && tile.road.serviceMask & 1);
+                const hasPower = tile.powerLine || (tile.road && tile.road.serviceMask & 2);
+                if (hasWater) {
+                    hasWaterSegment = true;
+                    waterPath.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
+                    waterPath.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.8);
                 }
-                if (tile.road.serviceMask & 2) {
-                    ctx.strokeStyle = 'rgba(255, 220, 90, 0.95)';
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    ctx.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
-                    ctx.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
-                    ctx.stroke();
+                if (hasPower) {
+                    hasPowerSegment = true;
+                    powerPath.moveTo(x * TILE_SIZE + TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
+                    powerPath.lineTo((x + 1) * TILE_SIZE - TILE_SIZE * 0.2, y * TILE_SIZE + TILE_SIZE * 0.2);
                 }
             }
         }
 
+        if (hasWaterSegment) {
+            ctx.strokeStyle = 'rgba(93, 216, 255, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.stroke(waterPath);
+        }
+        if (hasPowerSegment) {
+            ctx.strokeStyle = 'rgba(255, 220, 90, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.stroke(powerPath);
+        }
+*** End Patch
         const nodes = infrastructure.getServiceNodes();
         for (const pump of nodes.waterPumps) {
             this._drawInfrastructureMarker(ctx, pump.x, pump.y, '#5dd8ff', 'W');

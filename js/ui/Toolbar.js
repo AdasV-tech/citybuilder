@@ -3,10 +3,11 @@
 // glue code — no game logic lives here.
 
 export class Toolbar {
-    constructor(rootEl, toolController, game) {
+    constructor(rootEl, toolController, game, audio) {
         this.root = rootEl;
         this.tools = toolController;
         this.game = game;
+        this.audio = audio;
 
         this.buttons = Array.from(this.root.querySelectorAll('[data-tool]'));
         this.speedButtons = Array.from(this.root.querySelectorAll('[data-speed]'));
@@ -37,8 +38,40 @@ export class Toolbar {
             });
         }
 
-        this.saveBtn?.addEventListener('click', () => this.game.saveGame());
-        this.loadBtn?.addEventListener('click', () => this.game.loadGame());
+        this.saveBtn?.addEventListener('click', () => { this.game.saveGame(); this.audio?.playSave?.(); });
+        this.loadBtn?.addEventListener('click', () => { this.game.loadGame(); this.audio?.playClick?.(); });
+        // export/import buttons (added optionally in index.html)
+        this.exportBtn = this.root.querySelector('[data-action="export"]');
+        this.importBtn = this.root.querySelector('[data-action="import"]');
+        this.exportBtn?.addEventListener('click', () => {
+            const data = this.game.saveManager.save(this.game);
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `citybuilder-save-${Date.now()}.json`;
+            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+            this.audio?.playClick?.();
+        });
+        this.importBtn?.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = 'application/json';
+            input.addEventListener('change', (ev) => {
+                const f = ev.target.files && ev.target.files[0];
+                if (!f) return;
+                const r = new FileReader();
+                r.onload = () => {
+                    try {
+                        const data = JSON.parse(r.result);
+                        this.game.saveManager.applyTo(this.game, data);
+                        this.game.infrastructure.rebuildNetworks();
+                        this.game._refreshLoadedState();
+                        this.audio?.playSave?.();
+                    } catch (e) { eventBus.emit('ui:toast', 'Invalid save file'); }
+                };
+                r.readAsText(f);
+            });
+            input.click();
+        });
         this.resetBtn?.addEventListener('click', () => {
             const confirmed = window.confirm('Are you sure you want to delete the whole save?');
             if (!confirmed) return;

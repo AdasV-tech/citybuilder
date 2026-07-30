@@ -64,13 +64,14 @@ export class InfrastructureManager {
         }
 
         this.map.forEachTile((tile, x, y) => {
-            if (!tile.road) return;
-            const hasWaterPipe = this.waterPipes.has(tileKey(x, y));
-            const hasPowerLine = this.powerLines.has(tileKey(x, y));
-            if (hasWaterPipe || hasPowerLine) {
-                tile.road.serviceMask = (tile.road.serviceMask || 0) | (hasWaterPipe ? 1 : 0) | (hasPowerLine ? 2 : 0);
-            } else if (tile.road.serviceMask) {
-                tile.road.serviceMask = 0;
+            const hasWaterPipe = tile.waterPipe || this.waterPipes.has(tileKey(x, y));
+            const hasPowerLine = tile.powerLine || this.powerLines.has(tileKey(x, y));
+            if (tile.road) {
+                if (hasWaterPipe || hasPowerLine) {
+                    tile.road.serviceMask = (tile.road.serviceMask || 0) | (hasWaterPipe ? 1 : 0) | (hasPowerLine ? 2 : 0);
+                } else if (tile.road.serviceMask) {
+                    tile.road.serviceMask = 0;
+                }
             }
         });
     }
@@ -86,11 +87,15 @@ export class InfrastructureManager {
     }
 
     hasWaterAccess(x, y) {
+        const tile = this.map.getTile(x, y);
+        if (tile?.waterPipe) return true;
         if (this.waterPipes.has(tileKey(x, y))) return true;
         return this.waterPumps.some(pump => Math.hypot(x - pump.x, y - pump.y) <= 3.5);
     }
 
     hasPowerAccess(x, y) {
+        const tile = this.map.getTile(x, y);
+        if (tile?.powerLine) return true;
         if (this.powerLines.has(tileKey(x, y))) return true;
         return this.powerPlants.some(plant => Math.hypot(x - plant.x, y - plant.y) <= 4.2);
     }

@@ -32,6 +32,12 @@
             <button data-tool="zone-industrial" class="tool-btn zone-industrial" title="Zone industrial">
                 <span class="icon">🏭</span><span class="label">Industrial</span>
             </button>
+            <button data-tool="water-pipe" class="tool-btn" title="Lay water pipe">
+                <span class="icon">💧</span><span class="label">Water Pipe</span>
+            </button>
+            <button data-tool="power-line" class="tool-btn" title="Lay power line">
+                <span class="icon">⚡</span><span class="label">Power Line</span>
+            </button>
             <button data-tool="bulldoze" class="tool-btn tool-danger" title="Bulldoze">
                 <span class="icon">🛠️</span><span class="label">Bulldoze</span>
             </button>
@@ -47,6 +53,8 @@
         <div class="toolbar-group toolbar-save">
             <button data-action="save" class="save-btn" title="Save game">💾 Save</button>
             <button data-action="load" class="save-btn" title="Load game">📂 Load</button>
+            <button data-action="export" class="save-btn" title="Export save">⬇️ Export</button>
+            <button data-action="import" class="save-btn" title="Import save">⬆️ Import</button>
             <button data-action="reset" class="save-btn tool-danger" title="Reset save data">🗑️ Reset</button>
         </div>
     </header>
@@ -97,8 +105,8 @@
         <div class="legend-row"><span class="legend-swatch" style="background:#5dd8ff">W</span> Water pump</div>
         <div class="legend-row"><span class="legend-swatch" style="background:#5b8e8b">S</span> Sewage outlet</div>
         <div class="legend-row"><span class="legend-swatch" style="background:#ffd166;color:#102234">E</span> Power plant</div>
-        <div class="legend-row"><span class="legend-line" style="background:#5dd8ff"></span> Water pipe (on roads)</div>
-        <div class="legend-row"><span class="legend-line" style="background:#ffdc5a"></span> Power line (on roads)</div>
+        <div class="legend-row"><span class="legend-line" style="background:#5dd8ff"></span> Water pipe</div>
+        <div class="legend-row"><span class="legend-line" style="background:#ffdc5a"></span> Power line</div>
         <div class="legend-note">Buildings outside coverage grow slower and are less happy.</div>
     </div>
 

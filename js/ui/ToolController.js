@@ -9,7 +9,7 @@ import { orthogonalPath } from '../utils/MathUtils.js';
 export class ToolController {
     constructor(game) {
         this.game = game;
-        this.activeTool = 'none'; // 'road' | 'bulldoze' | 'zone-residential' | 'zone-commercial' | 'zone-industrial'
+        this.activeTool = 'none'; // 'road' | 'water-pipe' | 'power-line' | 'bulldoze' | 'zone-residential' | 'zone-commercial' | 'zone-industrial'
         this._dragStart = null;
         this._dragCurrent = null;
         this.hoverTile = null;
@@ -52,7 +52,7 @@ export class ToolController {
         if (!this._dragStart || !this._dragCurrent) return [];
         const a = this._dragStart, b = this._dragCurrent;
 
-        if (this.activeTool === 'road') {
+        if (this.activeTool === 'road' || this.activeTool === 'water-pipe' || this.activeTool === 'power-line') {
             return orthogonalPath(a.x, a.y, b.x, b.y);
         }
         // zone tools and bulldozer paint a filled rectangle
@@ -82,12 +82,16 @@ export class ToolController {
         switch (this.activeTool) {
             case 'road':
                 return !tile.road && !tile.isWater && !tile.building && !tile.zoneType;
+            case 'water-pipe':
+                return !tile.isWater && !tile.road && !tile.building && !tile.waterPipe;
+            case 'power-line':
+                return !tile.isWater && !tile.road && !tile.building && !tile.powerLine;
             case 'zone-residential':
             case 'zone-commercial':
             case 'zone-industrial':
                 return tile.isEmptyZonable;
             case 'bulldoze':
-                return tile.isBulldozable;
+                return tile.isBulldozable || tile.waterPipe || tile.powerLine;
             default:
                 return false;
         }
@@ -97,6 +101,10 @@ export class ToolController {
         const tiles = this._tilesForCurrentDrag();
         if (this.activeTool === 'road') {
             this.game.placeRoads(tiles);
+        } else if (this.activeTool === 'water-pipe') {
+            this.game.placeUtilities(tiles, 'waterPipe');
+        } else if (this.activeTool === 'power-line') {
+            this.game.placeUtilities(tiles, 'powerLine');
         } else if (this.activeTool.startsWith('zone-')) {
             const zoneType = this.activeTool.replace('zone-', '');
             this.game.placeZones(tiles, zoneType);

@@ -4,7 +4,7 @@
 // manager just needs to know the going rates so the UI can show them too.
 
 import {
-    STARTING_MONEY, COST_ROAD_TILE, COST_ZONE_TILE,
+    STARTING_MONEY, COST_ROAD_TILE, COST_ZONE_TILE, COST_UTILITY_TILE,
     ROAD_UPKEEP_PER_TILE
 } from '../utils/Constants.js';
 import { eventBus } from '../utils/EventBus.js';
@@ -32,6 +32,7 @@ export class EconomyManager {
 
     roadCost(tileCount = 1) { return tileCount * COST_ROAD_TILE; }
     zoneCost(tileCount = 1) { return tileCount * COST_ZONE_TILE; }
+    utilityCost(tileCount = 1) { return tileCount * COST_UTILITY_TILE; }
 
     /** Called once per simulated day. Applies tax income and upkeep expenses. */
     settleDailyBudget(zoneManager, roadNetwork) {
