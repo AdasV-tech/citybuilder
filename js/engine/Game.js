@@ -21,6 +21,7 @@ import { ZoneManager } from '../zoning/ZoneManager.js';
 import { RoadNetwork } from '../traffic/RoadNetwork.js';
 import { Pathfinder } from '../traffic/Pathfinder.js';
 import { TrafficManager } from '../traffic/TrafficManager.js';
+import { PedestrianManager } from '../traffic/PedestrianManager.js';
 import { Camera } from './Camera.js';
 import { InputHandler } from './InputHandler.js';
 import { GameLoop } from './GameLoop.js';
@@ -91,6 +92,7 @@ export class Game {
         this.milestones = new MilestoneManager();
         this.advisor = new Advisor();
         this.traffic = new TrafficManager(this.roads, this.pathfinder, this.zones, this.time);
+        this.pedestrians = new PedestrianManager(this.roads, this.pathfinder, this.zones, this.time);
     }
 
     get stats() { return this.zones.stats; }
@@ -276,6 +278,7 @@ export class Game {
             }
 
             this.traffic.update(simDt);
+            this.pedestrians.update(simDt);
 
             this._simAccumulator += simDt;
             let steps = 0;
@@ -325,6 +328,7 @@ export class Game {
             cityMap: this.cityMap,
             fields: this.fields,
             trafficManager: this.traffic,
+            pedestrianManager: this.pedestrians,
             dataView: this.ui.dataView,
             preview: this.ui.tools.preview,
             hover: this.ui.tools.hover,
@@ -375,6 +379,7 @@ export class Game {
         this.resetCity({ silent: true, keepSeed: true });
         this.saveManager.applyTo(this, data);
         this.traffic.reset();
+        this.pedestrians.reset();
         this.pathfinder.clearCache();
         this.advisor.reset();
         this._refreshAll();
@@ -395,6 +400,7 @@ export class Game {
         }
         this.roads.roadTiles.clear();
         this.traffic.reset();
+        this.pedestrians.reset();
         this.pathfinder.clearCache();
         this.economy = new EconomyManager();
         this.demand = new DemandManager();
@@ -403,6 +409,7 @@ export class Game {
         this.advisor.reset();
         this.utilities = new UtilityGrid(this.cityMap, this.services, this.zones);
         this.traffic.time = this.time;
+        this.pedestrians.time = this.time;
 
         if (!silent) {
             this._seedStartingCity();

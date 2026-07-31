@@ -103,6 +103,14 @@ export const COMMUTE_WINDOWS = [
     { start: 0.62, end: 0.84, direction: 'toHome' }
 ];
 
+// --- Pedestrians --------------------------------------------------------------------
+export const MAX_PEDESTRIANS = 150;
+export const PEDESTRIAN_SPEED = 0.9;       // tiles per second, walking pace
+export const PEDESTRIAN_MIN_GAP = 0.16;
+export const SIDEWALK_OFFSET = 0.42;       // tile-units from the road centreline
+export const WALK_MAX_TILES = 24;          // longer than this and nobody bothers on foot
+export const PEDESTRIAN_ZOOM_MIN = 1.35;   // only rendered once the player is zoomed in past the default view
+
 // --- Simulation cadence ---------------------------------------------------------------
 export const FIELD_REBUILD_MS = 1400;   // land value / pollution / coverage refresh
 export const UTILITY_REBUILD_MS = 900;  // power + water flood fill refresh

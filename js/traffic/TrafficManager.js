@@ -109,13 +109,17 @@ export class TrafficManager {
             return;
         }
 
-        // Cars ahead on the same tile cap how far a car may advance. Keyed by
-        // tile position only — two cars can reach the same tile from different
-        // routes (different start points give different path indices for that
-        // tile), and keying by path index as well as tile made those cars
-        // invisible to each other, letting them drive straight through one
-        // another. Position alone is what actually occupies space on the road.
-        const leaders = new Map(); // "x,y" -> smallest fraction into that tile
+        // Every car's fraction into whichever tile it currently occupies,
+        // grouped by tile position (not path index — two cars can reach the
+        // same tile via different routes, and indexing by path position as
+        // well made those cars invisible to each other, letting them drive
+        // straight through one another) and sorted so each car can find
+        // whoever is nearest ahead of it. That covers both a car about to
+        // enter a tile someone's already in, and — since this is rebuilt from
+        // scratch every frame — two cars that are already sharing a tile: a
+        // faster trailing car can't keep closing the gap once both are
+        // inside, because it's rechecked every tick, not just at entry.
+        const occupants = new Map(); // "x,y" -> [{id, fraction}] sorted ascending
         const counts = this._tileCounts;
         counts.clear();
 
@@ -124,10 +128,11 @@ export class TrafficManager {
             const tile = car.path[index];
             const key = `${tile.x},${tile.y}`;
             counts.set(key, (counts.get(key) ?? 0) + 1);
-            const fraction = car.progress - index;
-            const existing = leaders.get(key);
-            if (existing === undefined || fraction < existing) leaders.set(key, fraction);
+            let list = occupants.get(key);
+            if (!list) { list = []; occupants.set(key, list); }
+            list.push({ id: car.id, fraction: car.progress - index });
         }
+        for (const list of occupants.values()) list.sort((a, b) => a.fraction - b.fraction);
 
         const map = this.roads.map;
         let finished = 0;
@@ -135,14 +140,20 @@ export class TrafficManager {
         for (const car of this.cars) {
             const index = car.tileIndex;
             const tile = map.getTile(car.path[index].x, car.path[index].y);
+            const myFraction = car.progress - index;
             let maxProgress = car.totalLength;
+
+            const here = occupants.get(`${car.path[index].x},${car.path[index].y}`);
+            const aheadHere = here?.find(o => o.fraction > myFraction && o.id !== car.id);
+            if (aheadHere) maxProgress = Math.min(maxProgress, index + aheadHere.fraction - CAR_MIN_GAP);
 
             const nextIndex = index + 1;
             if (nextIndex <= car.totalLength) {
                 const nextTile = car.path[nextIndex];
-                const ahead = leaders.get(`${nextTile.x},${nextTile.y}`);
-                if (ahead !== undefined && ahead < CAR_MIN_GAP) {
-                    maxProgress = Math.min(maxProgress, nextIndex + ahead - CAR_MIN_GAP);
+                const nextOccupants = occupants.get(`${nextTile.x},${nextTile.y}`);
+                const first = nextOccupants?.[0];
+                if (first !== undefined && first.fraction < CAR_MIN_GAP) {
+                    maxProgress = Math.min(maxProgress, nextIndex + first.fraction - CAR_MIN_GAP);
                 }
             }
 

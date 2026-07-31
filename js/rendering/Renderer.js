@@ -1,6 +1,6 @@
 // js/rendering/Renderer.js
 // Draw order: terrain -> zones/utilities -> roads -> buildings -> cars ->
-// pollution haze -> night tint -> data view -> preview/selection.
+// pedestrians -> pollution haze -> night tint -> data view -> preview/selection.
 //
 // Two performance ideas do most of the work here:
 //
@@ -16,6 +16,7 @@ import { drawTerrainTile, drawZoneTint, drawUtilityTile } from './MapRenderer.js
 import { drawRoadTile } from './RoadRenderer.js';
 import { drawBuildings } from './BuildingRenderer.js';
 import { drawCars } from './CarRenderer.js';
+import { drawPedestrians } from './PedestrianRenderer.js';
 import { drawDataView, drawPreview, drawHover, drawSelection, drawPollutionHaze } from './OverlayRenderer.js';
 
 const CHUNK_PX = CHUNK_TILES * TILE_SIZE;
@@ -106,6 +107,7 @@ export class Renderer {
         });
 
         drawCars(ctx, state.trafficManager, cam.zoom, state.night);
+        drawPedestrians(ctx, state.pedestrianManager, cam.zoom);
 
         // Skip the ambient haze while the Pollution data view is up — that
         // overlay already covers the same ground with a clearer ramp.
