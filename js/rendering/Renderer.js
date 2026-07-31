@@ -1,6 +1,6 @@
 // js/rendering/Renderer.js
 // Draw order: terrain -> zones/utilities -> roads -> buildings -> cars ->
-// night tint -> data view -> preview/selection.
+// pollution haze -> night tint -> data view -> preview/selection.
 //
 // Two performance ideas do most of the work here:
 //
@@ -16,7 +16,7 @@ import { drawTerrainTile, drawZoneTint, drawUtilityTile } from './MapRenderer.js
 import { drawRoadTile } from './RoadRenderer.js';
 import { drawBuildings } from './BuildingRenderer.js';
 import { drawCars } from './CarRenderer.js';
-import { drawDataView, drawPreview, drawHover, drawSelection } from './OverlayRenderer.js';
+import { drawDataView, drawPreview, drawHover, drawSelection, drawPollutionHaze } from './OverlayRenderer.js';
 
 const CHUNK_PX = CHUNK_TILES * TILE_SIZE;
 const DIRECT_DRAW_ZOOM = 1.3;
@@ -107,6 +107,12 @@ export class Renderer {
 
         drawCars(ctx, state.trafficManager, cam.zoom, state.night);
 
+        // Skip the ambient haze while the Pollution data view is up — that
+        // overlay already covers the same ground with a clearer ramp.
+        if (state.dataView !== 'pollution') {
+            drawPollutionHaze(ctx, state.fields, bounds, this.map.width);
+        }
+
         if (state.nightFactor > 0.02) {
             ctx.fillStyle = `rgba(16, 24, 48, ${state.nightFactor * 0.45})`;
             ctx.fillRect(
@@ -150,7 +156,7 @@ export class Renderer {
                 const px = x * TILE_SIZE, py = y * TILE_SIZE;
                 drawTerrainTile(ctx, tile, px, py);
                 drawZoneTint(ctx, tile, px, py);
-                drawUtilityTile(ctx, tile, px, py);
+                drawUtilityTile(ctx, map, tile, px, py);
                 this.stats.drawnTiles++;
             }
         }
@@ -198,7 +204,7 @@ export class Renderer {
                 const px = tx * TILE_SIZE, py = ty * TILE_SIZE;
                 drawTerrainTile(ctx, tile, px, py);
                 drawZoneTint(ctx, tile, px, py);
-                drawUtilityTile(ctx, tile, px, py);
+                drawUtilityTile(ctx, map, tile, px, py);
             }
         }
         for (let ty = 0; ty < CHUNK_TILES; ty++) {

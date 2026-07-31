@@ -139,7 +139,7 @@ export class HUD {
 
         const happiness = game.zones.averageHappiness;
         this._set('happiness', `${Math.round(happiness * 100)}%`);
-        this._set('moodIcon', happiness > 0.66 ? '😀' : happiness > 0.45 ? '🙂' : happiness > 0.3 ? '😐' : '😠');
+        this._set('moodIcon', happiness >= 0.75 ? '😀' : happiness >= 0.5 ? '🙂' : happiness >= 0.25 ? '😐' : '😠');
 
         this._setWidth('powerFill', game.utilities.powerRatio);
         this._setWidth('waterFill', game.utilities.waterRatio);

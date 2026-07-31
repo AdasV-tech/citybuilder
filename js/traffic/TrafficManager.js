@@ -109,8 +109,13 @@ export class TrafficManager {
             return;
         }
 
-        // Cars ahead on the same path segment cap how far a car may advance.
-        const leaders = new Map(); // "tileKey#index" -> smallest fraction into that tile
+        // Cars ahead on the same tile cap how far a car may advance. Keyed by
+        // tile position only — two cars can reach the same tile from different
+        // routes (different start points give different path indices for that
+        // tile), and keying by path index as well as tile made those cars
+        // invisible to each other, letting them drive straight through one
+        // another. Position alone is what actually occupies space on the road.
+        const leaders = new Map(); // "x,y" -> smallest fraction into that tile
         const counts = this._tileCounts;
         counts.clear();
 
@@ -119,10 +124,9 @@ export class TrafficManager {
             const tile = car.path[index];
             const key = `${tile.x},${tile.y}`;
             counts.set(key, (counts.get(key) ?? 0) + 1);
-            const slot = `${key}#${index}`;
             const fraction = car.progress - index;
-            const existing = leaders.get(slot);
-            if (existing === undefined || fraction < existing) leaders.set(slot, fraction);
+            const existing = leaders.get(key);
+            if (existing === undefined || fraction < existing) leaders.set(key, fraction);
         }
 
         const map = this.roads.map;
@@ -136,7 +140,7 @@ export class TrafficManager {
             const nextIndex = index + 1;
             if (nextIndex <= car.totalLength) {
                 const nextTile = car.path[nextIndex];
-                const ahead = leaders.get(`${nextTile.x},${nextTile.y}#${nextIndex}`);
+                const ahead = leaders.get(`${nextTile.x},${nextTile.y}`);
                 if (ahead !== undefined && ahead < CAR_MIN_GAP) {
                     maxProgress = Math.min(maxProgress, nextIndex + ahead - CAR_MIN_GAP);
                 }

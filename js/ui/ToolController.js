@@ -92,7 +92,7 @@ export class ToolController {
 
         if (tool.kind === 'service') {
             const def = getService(tool.serviceId);
-            const origin = this._serviceOrigin(x1, y1, def.size);
+            const origin = this._nearestValidServiceOrigin(x1, y1, def);
             const check = this.game.services.checkPlacement(def.id, origin.x, origin.y);
             this.preview = {
                 tiles: [],
@@ -117,6 +117,38 @@ export class ToolController {
     _serviceOrigin(x, y, size) {
         const half = Math.floor((size - 1) / 2);
         return { x: x - half, y: y - half };
+    }
+
+    /**
+     * Centre the footprint on the cursor, same as `_serviceOrigin`, but if
+     * that exact spot is illegal, snap to the closest legal spot nearby.
+     *
+     * A road-adjacent building can only legally sit in the ring of tiles that
+     * touch a road without overlapping it, which for roads (one tile wide) is
+     * itself only one tile wide — lining the cursor up with that ring by eye
+     * is unreasonably fiddly, especially for bigger footprints (a 3x3 coal
+     * plant next to the starting road) where a couple of pixels' difference
+     * flips between "needs road access" and "a road is in the way" with
+     * nothing valid in between at the naive centred position. Snapping keeps
+     * the same placement rules, it just stops punishing imprecise aim.
+     */
+    _nearestValidServiceOrigin(x, y, def) {
+        const naive = this._serviceOrigin(x, y, def.size);
+        const services = this.game.services;
+        if (services.checkPlacement(def.id, naive.x, naive.y).ok) return naive;
+
+        const SNAP_RADIUS = 3;
+        let best = null, bestDist = Infinity;
+        for (let dy = -SNAP_RADIUS; dy <= SNAP_RADIUS; dy++) {
+            for (let dx = -SNAP_RADIUS; dx <= SNAP_RADIUS; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const cx = naive.x + dx, cy = naive.y + dy;
+                if (!services.checkPlacement(def.id, cx, cy).ok) continue;
+                const dist = dx * dx + dy * dy;
+                if (dist < bestDist) { bestDist = dist; best = { x: cx, y: cy }; }
+            }
+        }
+        return best ?? naive;
     }
 
     _isValid(x, y) {

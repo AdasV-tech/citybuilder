@@ -183,7 +183,9 @@ export class Game {
             if (!tile) continue;
             tile.clearTrees();
             if (kind === 'pipe') tile.pipe = true; else tile.wire = true;
-            this.renderer.invalidateTile(t.x, t.y);
+            // 3x3 so a tile's already-drawn neighbour picks up the new
+            // connection too, not just the tile that was just placed.
+            this.renderer.invalidateArea(t.x - 1, t.y - 1, 3, 3);
         }
         this._markUtilitiesDirty();
         this.ui.audio.playBuild();

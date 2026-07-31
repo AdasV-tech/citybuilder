@@ -86,24 +86,47 @@ export function drawZoneTint(ctx, tile, px, py) {
     ctx.strokeRect(px + 1.5, py + 1.5, TILE_SIZE - 3, TILE_SIZE - 3);
 }
 
-/** Player-laid pipes and wires (roads carry utilities invisibly). */
-export function drawUtilityTile(ctx, tile, px, py) {
+/**
+ * Player-laid pipes and wires (roads carry utilities invisibly). Drawn as a
+ * spine reaching toward every neighbour that also conducts the same utility —
+ * the same connection-aware approach `drawRoadTile` uses — so a line that
+ * turns a corner or meets a road actually looks joined up instead of always
+ * being a straight horizontal (pipe) or vertical (wire) stroke regardless of
+ * which way it runs.
+ */
+export function drawUtilityTile(ctx, map, tile, px, py) {
     if (tile.pipe) {
-        ctx.strokeStyle = tile.watered ? COLORS.waterLine : 'rgba(120,160,180,0.75)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(px, py + TILE_SIZE * 0.5);
-        ctx.lineTo(px + TILE_SIZE, py + TILE_SIZE * 0.5);
-        ctx.stroke();
+        drawUtilitySpine(ctx, map, tile, px, py, 'conductsWater',
+            tile.watered ? COLORS.waterLine : 'rgba(120,160,180,0.75)', 3);
     }
     if (tile.wire) {
-        ctx.strokeStyle = tile.powered ? COLORS.power : 'rgba(150,150,120,0.75)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(px + TILE_SIZE * 0.5, py);
-        ctx.lineTo(px + TILE_SIZE * 0.5, py + TILE_SIZE);
-        ctx.stroke();
+        drawUtilitySpine(ctx, map, tile, px, py, 'conductsPower',
+            tile.powered ? COLORS.power : 'rgba(150,150,120,0.75)', 2);
+        const cx = px + TILE_SIZE * 0.5, cy = py + TILE_SIZE * 0.5;
         ctx.fillStyle = '#6b5a3c';
-        ctx.fillRect(px + TILE_SIZE * 0.5 - 2, py + TILE_SIZE * 0.5 - 5, 4, 10);
+        ctx.fillRect(cx - 2, cy - 5, 4, 10);
     }
+}
+
+function drawUtilitySpine(ctx, map, tile, px, py, conductsKey, color, width) {
+    const cx = px + TILE_SIZE * 0.5, cy = py + TILE_SIZE * 0.5;
+    const reach = TILE_SIZE * 0.5 + 1; // 1px overlap so neighbouring segments visually meet
+    const north = map.getTile(tile.x, tile.y - 1);
+    const south = map.getTile(tile.x, tile.y + 1);
+    const west = map.getTile(tile.x - 1, tile.y);
+    const east = map.getTile(tile.x + 1, tile.y);
+    const linked = [north, south, west, east].filter(t => t?.[conductsKey]).length;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (north?.[conductsKey]) { ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - reach); }
+    if (south?.[conductsKey]) { ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + reach); }
+    if (west?.[conductsKey]) { ctx.moveTo(cx, cy); ctx.lineTo(cx - reach, cy); }
+    if (east?.[conductsKey]) { ctx.moveTo(cx, cy); ctx.lineTo(cx + reach, cy); }
+    // Not connected to anything yet — still show a short stub so a freshly
+    // placed tile is visible instead of vanishing.
+    if (linked === 0) { ctx.moveTo(cx - TILE_SIZE * 0.2, cy); ctx.lineTo(cx + TILE_SIZE * 0.2, cy); }
+    ctx.stroke();
 }

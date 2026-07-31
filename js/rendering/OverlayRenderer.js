@@ -9,6 +9,30 @@ import { INFO_VIEWS } from '../data/Toolbox.js';
 
 const VIEW_BY_ID = new Map(INFO_VIEWS.map(v => [v.id, v]));
 
+const POLLUTION_HAZE_THRESHOLD = 0.18;
+
+/**
+ * Faint smog hanging over polluted ground, always visible (not just while the
+ * Pollution data view is toggled on) so industrial districts read as dirty at
+ * a glance, the way parks read as green. Reuses the same simulated pollution
+ * field the data view samples, so the haze always sits exactly where industry
+ * (and busy roads) actually put it.
+ */
+export function drawPollutionHaze(ctx, fields, bounds, mapWidth) {
+    const pollution = fields.pollution;
+    ctx.save();
+    for (let y = bounds.minY; y <= bounds.maxY; y++) {
+        for (let x = bounds.minX; x <= bounds.maxX; x++) {
+            const value = pollution[y * mapWidth + x];
+            if (value < POLLUTION_HAZE_THRESHOLD) continue;
+            ctx.globalAlpha = Math.min(0.5, (value - POLLUTION_HAZE_THRESHOLD) * 0.75);
+            ctx.fillStyle = '#57503c';
+            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        }
+    }
+    ctx.restore();
+}
+
 /** Paints the active data view across the visible tiles. */
 export function drawDataView(ctx, viewId, state, bounds) {
     if (!viewId || viewId === 'none') return;
