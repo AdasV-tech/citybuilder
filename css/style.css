@@ -542,6 +542,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
     z-index: 100;
 }
 
+#boot-error[hidden] {
+    display: none;
+}
+
 /* ============================ responsive ============================ */
 
 @media (max-width: 900px) {
